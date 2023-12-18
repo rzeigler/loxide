@@ -1,3 +1,5 @@
+mod scanner;
+
 use std::env::args;
 use std::fs::File;
 use std::io::prelude::*;
