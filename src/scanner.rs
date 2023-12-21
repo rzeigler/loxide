@@ -119,7 +119,7 @@ impl Display for Keyword {
     }
 }
 
-struct Scanner<'lex> {
+pub struct Scanner<'lex> {
     code: &'lex str,
     code_iter: Peekable<CharIndices<'lex>>,
 

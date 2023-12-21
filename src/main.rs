@@ -7,6 +7,8 @@ use std::io::BufReader;
 
 use anyhow::{Context, Result};
 
+use scanner::Scanner;
+
 fn main() -> Result<()> {
     let args = args();
     if args.len() > 2 {
@@ -51,5 +53,9 @@ fn run_prompt() -> Result<()> {
 }
 
 fn run(code: &str) -> Result<()> {
+    for token_result in Scanner::new(code) {
+        let token = token_result?;
+        println!("{:?}", token);
+    }
     Ok(())
 }
