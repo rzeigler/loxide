@@ -11,8 +11,7 @@ pub struct Pos {
 
 impl Display for Pos {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.line, self.offset_in_line);
-        Ok(())
+        write!(f, "{}:{}", self.line, self.offset_in_line)
     }
 }
 
@@ -29,12 +28,18 @@ pub enum ScanError {
 /// References the lifetime of the lifetime of the code
 
 #[derive(Debug, PartialEq)]
-pub enum Token<'code> {
-    Symbol { symbol: Symbol, pos: Pos },
-    Keyword { keyword: Keyword, pos: Pos },
-    Identifier { identifier: &'code str, pos: Pos },
-    String { string: &'code str, pos: Pos },
-    Number { number: f64, pos: Pos },
+pub struct Token<'code> {
+    data: Data<'code>,
+    pos: Pos,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Data<'code> {
+    Symbol { symbol: Symbol },
+    Keyword { keyword: Keyword },
+    Identifier { identifier: &'code str },
+    String { string: &'code str },
+    Number { number: f64 },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -207,80 +212,100 @@ impl<'lex> Iterator for Scanner<'lex> {
             let pos = self.current_pos();
             match ch {
                 '(' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::LeftParen,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::LeftParen,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 ')' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::RightParen,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::RightParen,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 '{' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::LeftBrace,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::LeftBrace,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 '}' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::RightBrace,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::RightBrace,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 ',' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::RightBrace,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::Comma,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 '.' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::Dot,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::Dot,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 '-' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::Minus,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::Minus,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 '+' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::Plus,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::Plus,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 ';' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::Semicolon,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::Semicolon,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
                     Some(Ok(token))
                 }
                 '*' => {
-                    let token = Token::Symbol {
-                        symbol: Symbol::Star,
+                    let token = Token {
+                        data: Data::Symbol {
+                            symbol: Symbol::Star,
+                        },
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -294,7 +319,10 @@ impl<'lex> Iterator for Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Bang
                     };
-                    Some(Ok(Token::Symbol { symbol, pos }))
+                    Some(Ok(Token {
+                        data: Data::Symbol { symbol },
+                        pos,
+                    }))
                 }
                 '=' => {
                     let symbol = if self.consume_next_char_if_eq('=') {
@@ -304,7 +332,10 @@ impl<'lex> Iterator for Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Equal
                     };
-                    Some(Ok(Token::Symbol { symbol, pos }))
+                    Some(Ok(Token {
+                        data: Data::Symbol { symbol },
+                        pos,
+                    }))
                 }
                 '<' => {
                     let symbol = if self.consume_next_char_if_eq('=') {
@@ -314,7 +345,10 @@ impl<'lex> Iterator for Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Less
                     };
-                    Some(Ok(Token::Symbol { symbol, pos }))
+                    Some(Ok(Token {
+                        data: Data::Symbol { symbol },
+                        pos,
+                    }))
                 }
                 '>' => {
                     let symbol = if self.consume_next_char_if_eq('=') {
@@ -324,7 +358,10 @@ impl<'lex> Iterator for Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Greater
                     };
-                    Some(Ok(Token::Symbol { symbol, pos }))
+                    Some(Ok(Token {
+                        data: Data::Symbol { symbol },
+                        pos,
+                    }))
                 }
                 '/' => {
                     if self.consume_next_char_if_eq('/') {
@@ -339,8 +376,10 @@ impl<'lex> Iterator for Scanner<'lex> {
                         self.next()
                     } else {
                         self.offset_in_line += 1;
-                        Some(Ok(Token::Symbol {
-                            symbol: Symbol::Slash,
+                        Some(Ok(Token {
+                            data: Data::Symbol {
+                                symbol: Symbol::Slash,
+                            },
                             pos,
                         }))
                     }
@@ -374,8 +413,11 @@ impl<'lex> Iterator for Scanner<'lex> {
                     self.offset_in_line += num_len;
                     // SAFETY: offset is generated as a valid utf-8 offset per CharIndices
                     let num_slice = unsafe { self.code_subslice(offset, num_len) };
-                    let num = num_slice.parse::<f64>().unwrap();
-                    let token = Token::Number { number: num, pos };
+                    let number = num_slice.parse::<f64>().unwrap();
+                    let token = Token {
+                        data: Data::Number { number },
+                        pos,
+                    };
                     Some(Ok(token))
                 }
                 '"' => {
@@ -405,13 +447,13 @@ impl<'lex> Iterator for Scanner<'lex> {
                         Some(Err(ScanError::UnterminatedString(pos)))
                     } else {
                         // We slice str_len -1 since we want to snip the trailing quote
-                        let str_slice = unsafe {
+                        let string = unsafe {
                             // SAFETY: offset is generated as a valid utf-8 offset per CharIndices
                             // We skip over the leading quote but this is definitely only 1 byte
                             self.code_subslice(offset + 1, str_len)
                         };
-                        Some(Ok(Token::String {
-                            string: str_slice,
+                        Some(Ok(Token {
+                            data: Data::String { string },
                             pos,
                         }))
                     }
@@ -423,15 +465,18 @@ impl<'lex> Iterator for Scanner<'lex> {
                     }
                     self.offset_in_line += num_len;
                     // SAFETY: offset is generated as a valid utf-8 offset per CharIndices
-                    let identifier_slice = unsafe { self.code_subslice(offset, num_len) };
+                    let identifier = unsafe { self.code_subslice(offset, num_len) };
                     let token = if let Some((_, kw)) = KEYWORD_LITERAL_TO_SYMBOL
                         .iter()
-                        .find(|(lit, _)| *lit == identifier_slice)
+                        .find(|(lit, _)| *lit == identifier)
                     {
-                        Token::Keyword { keyword: *kw, pos }
+                        Token {
+                            data: Data::Keyword { keyword: *kw },
+                            pos,
+                        }
                     } else {
-                        Token::Identifier {
-                            identifier: identifier_slice,
+                        Token {
+                            data: Data::Identifier { identifier },
                             pos,
                         }
                     };
@@ -457,15 +502,15 @@ mod test {
         let code = "var";
         let mut scanner = Scanner::new(&code);
         let first_token = scanner.next().unwrap().unwrap();
-        match first_token {
-            Token::Keyword { keyword, pos } => {
+        match first_token.data {
+            Data::Keyword { keyword } => {
                 assert_eq!(Keyword::Var, keyword);
                 assert_eq!(
                     Pos {
                         offset_in_line: 0,
                         line: 0
                     },
-                    pos
+                    first_token.pos
                 );
             }
             _ => unreachable!(),
@@ -477,60 +522,60 @@ mod test {
         let code = "var marco = \"9001\"";
         let mut scanner = Scanner::new(&code);
         let token = scanner.next().unwrap().unwrap();
-        match token {
-            Token::Keyword { keyword, pos } => {
+        match token.data {
+            Data::Keyword { keyword } => {
                 assert_eq!(Keyword::Var, keyword);
                 assert_eq!(
                     Pos {
                         offset_in_line: 0,
                         line: 0
                     },
-                    pos
+                    token.pos
                 );
             }
             _ => unreachable!(),
         }
 
         let token = scanner.next().unwrap().unwrap();
-        match token {
-            Token::Identifier { identifier, pos } => {
+        match token.data {
+            Data::Identifier { identifier } => {
                 assert_eq!("marco", identifier);
                 assert_eq!(
                     Pos {
                         offset_in_line: 4,
                         line: 0
                     },
-                    pos
+                    token.pos
                 );
             }
             _ => unreachable!(),
         }
 
         let token = scanner.next().unwrap().unwrap();
-        match token {
-            Token::Symbol { symbol, pos } => {
+        match token.data {
+            Data::Symbol { symbol } => {
                 assert_eq!(Symbol::Equal, symbol);
                 assert_eq!(
                     Pos {
                         offset_in_line: 10,
                         line: 0
                     },
-                    pos
+                    token.pos
                 );
             }
             _ => unreachable!(),
         }
 
         let token = scanner.next().unwrap().unwrap();
-        match token {
-            Token::String { string, pos } => {
+        match token.data {
+            Data::String { string } => {
                 assert_eq!("9001", string);
                 assert_eq!(
                     Pos {
                         offset_in_line: 12,
                         line: 0
                     },
-                    pos
+                    token.pos
                 );
             }
             _ => unreachable!(),
@@ -548,24 +593,24 @@ bomp";
         let mut scanner = Scanner::new(&code);
         // Did we get a string?
         let token = scanner.next().unwrap().unwrap();
-        match token {
-            Token::String { string, pos } => {
+        match token.data {
+            Data::String { string } => {
                 assert_eq!("marco\nbomp", string);
-                assert_eq!(1, pos.line);
+                assert_eq!(1, token.pos.line);
             }
             _ => unreachable!(),
         }
         // Did we correctly update the lines etc
         let token = scanner.next().unwrap().unwrap();
-        match token {
-            Token::Symbol { symbol, pos } => {
+        match token.data {
+            Data::Symbol { symbol } => {
                 assert_eq!(Symbol::Semicolon, symbol);
                 assert_eq!(
                     Pos {
                         line: 2,
                         offset_in_line: 5
                     },
-                    pos
+                    token.pos
                 );
             }
             _ => unreachable!(),
