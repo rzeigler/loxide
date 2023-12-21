@@ -1,3 +1,4 @@
+mod parser;
 mod scanner;
 
 use std::env::args;
