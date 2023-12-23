@@ -3,10 +3,10 @@ use std::iter::Peekable;
 use std::str::CharIndices;
 use thiserror::Error;
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Pos {
-    offset_in_line: usize,
-    line: usize,
+    pub offset_in_line: usize,
+    pub line: usize,
 }
 
 impl Display for Pos {
@@ -15,7 +15,7 @@ impl Display for Pos {
     }
 }
 
-#[derive(Error, Debug)]
+#[derive(Clone, Error, Debug)]
 pub enum ScanError {
     #[error("unterminated string: {0}")]
     UnterminatedString(Pos),
@@ -27,13 +27,13 @@ pub enum ScanError {
 ///
 /// References the lifetime of the lifetime of the code
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Token<'code> {
-    data: Data<'code>,
-    pos: Pos,
+    pub data: Data<'code>,
+    pub pos: Pos,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Data<'code> {
     Symbol { symbol: Symbol },
     Keyword { keyword: Keyword },
@@ -42,7 +42,7 @@ pub enum Data<'code> {
     Number { number: f64 },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Symbol {
     // Single-character tokens.
     LeftParen,
@@ -119,6 +119,7 @@ impl Display for Keyword {
     }
 }
 
+#[derive(Clone)]
 pub struct Scanner<'lex> {
     code: &'lex str,
     code_iter: Peekable<CharIndices<'lex>>,
@@ -134,16 +135,6 @@ impl<'lex> Scanner<'lex> {
             code_iter: code.char_indices().peekable(),
             line: 0,
             offset_in_line: 0,
-        }
-    }
-
-    // Duplicate the current scanner so that we
-    pub fn duplicate(&self) -> Scanner<'lex> {
-        Scanner {
-            code: self.code,
-            code_iter: self.code_iter.clone(),
-            line: self.line,
-            offset_in_line: self.offset_in_line,
         }
     }
 

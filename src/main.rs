@@ -6,8 +6,11 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::io::BufReader;
 
+use anyhow::bail;
 use anyhow::{Context, Result};
 
+use bumpalo::Bump;
+use parser::parse;
 use scanner::Scanner;
 
 fn main() -> Result<()> {
@@ -45,7 +48,9 @@ fn run_prompt() -> Result<()> {
         if n == 0 {
             break;
         }
-        run(&line)?;
+        if let Err(e) = run(&line) {
+            println!("error: {}", e);
+        }
         // Don't keep appending code until the next time
         line.clear();
         stdout.write("<\n".as_bytes())?;
@@ -54,9 +59,15 @@ fn run_prompt() -> Result<()> {
 }
 
 fn run(code: &str) -> Result<()> {
-    for token_result in Scanner::new(code) {
-        let token = token_result?;
-        println!("{:?}", token);
+    let bump = Bump::new();
+    match parse(&bump, Scanner::new(code)) {
+        Ok(expr) => {
+            println!("{}", expr);
+            Ok(())
+        }
+        Err(err) => {
+            println!("{}", err);
+            bail!("parsing failed")
+        }
     }
-    Ok(())
 }
