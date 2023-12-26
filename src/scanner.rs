@@ -15,18 +15,23 @@ impl Display for Pos {
     }
 }
 
-#[derive(Clone, Error, Debug)]
-pub enum ScanError {
-    #[error("unterminated string: {0}")]
-    UnterminatedString(Pos),
-    #[error("unrecognized token: {0}")]
-    UnrecognizedToken(Pos),
+#[derive(Clone, Error, Debug, PartialEq, Eq)]
+#[error("scan error: {error:?} {pos}")]
+pub struct ScanError {
+    error: ScanErrorType,
+    pos: Pos,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanErrorType {
+    UnterminatedString,
+    UnrecognizedToken,
 }
 
 /// A token in the input stream
-///
-/// References the lifetime of the lifetime of the code
-
+/// Contains a data which is the symbol variant and a position
+/// Note that pos is always defined, but in the case of EOF will describe a location
+/// Potentially off the end of the input stream
 #[derive(Debug, PartialEq, Clone)]
 pub struct Token<'code> {
     pub data: Data<'code>,
@@ -40,6 +45,30 @@ pub enum Data<'code> {
     Identifier { identifier: &'code str },
     String { string: &'code str },
     Number { number: f64 },
+    Eof,
+}
+
+/// Describe the type of a data without reference to the underlying data
+/// This is useful for referring to an expeted token rather than input data
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum DataType {
+    Symbol(Symbol),
+    Keyword(Keyword),
+    Identifier,
+    String,
+    Number,
+}
+
+impl Display for DataType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Symbol(sym) => sym.fmt(f),
+            Self::Keyword(kw) => kw.fmt(f),
+            Self::Identifier => f.write_str("identifier"),
+            Self::String => f.write_str("string"),
+            Self::Number => f.write_str("number"),
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -123,6 +152,7 @@ impl Display for Keyword {
 pub struct Scanner<'lex> {
     code: &'lex str,
     code_iter: Peekable<CharIndices<'lex>>,
+    emitted_eof: bool, // Have we sent the EOF yet
 
     line: usize,
     offset_in_line: usize,
@@ -133,6 +163,7 @@ impl<'lex> Scanner<'lex> {
         Scanner {
             code,
             code_iter: code.char_indices().peekable(),
+            emitted_eof: false,
             line: 0,
             offset_in_line: 0,
         }
@@ -199,8 +230,8 @@ impl<'lex> Iterator for Scanner<'lex> {
     type Item = Result<Token<'lex>, ScanError>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        let pos = self.current_pos();
         if let Some((offset, ch)) = self.code_iter.next() {
-            let pos = self.current_pos();
             match ch {
                 '(' => {
                     let token = Token {
@@ -435,7 +466,10 @@ impl<'lex> Iterator for Scanner<'lex> {
                         }
                     }
                     if !terminated {
-                        Some(Err(ScanError::UnterminatedString(pos)))
+                        Some(Err(ScanError {
+                            error: ScanErrorType::UnterminatedString,
+                            pos,
+                        }))
                     } else {
                         // We slice str_len -1 since we want to snip the trailing quote
                         let string = unsafe {
@@ -475,9 +509,18 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 _ => {
                     self.offset_in_line += 1;
-                    Some(Err(ScanError::UnrecognizedToken(pos)))
+                    Some(Err(ScanError {
+                        error: ScanErrorType::UnrecognizedToken,
+                        pos,
+                    }))
                 }
             }
+        } else if !self.emitted_eof {
+            self.emitted_eof = true;
+            Some(Ok(Token {
+                data: Data::Eof,
+                pos,
+            }))
         } else {
             None
         }
@@ -572,6 +615,12 @@ mod test {
             _ => unreachable!(),
         }
 
+        let token = scanner.next().unwrap().unwrap();
+        match token.data {
+            Data::Eof => {}
+            _ => unreachable!(),
+        }
+        // We have passed the EOF
         assert!(scanner.next().is_none());
     }
 
@@ -606,5 +655,25 @@ bomp";
             }
             _ => unreachable!(),
         }
+    }
+
+    // Verify we don't get into an infinite loop by error conditions
+    #[test]
+    fn no_infinite_seq_on_unterminate_string() {
+        let code = "\"a string that isn't terminated";
+        let mut scanner = Scanner::new(&code);
+        let token = scanner.next().unwrap();
+        assert_eq!(ScanErrorType::UnterminatedString, token.unwrap_err().error);
+        let token = scanner.next().unwrap();
+        assert_eq!(Data::Eof, token.unwrap().data);
+        assert!(scanner.next().is_none());
+    }
+
+    #[test]
+    fn no_infinite_seq_on_bad_token() {
+        let code = "$var";
+        let mut scanner = Scanner::new(&code);
+        let token = scanner.next().unwrap();
+        assert_eq!(ScanErrorType::UnrecognizedToken, token.unwrap_err().error);
     }
 }

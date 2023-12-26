@@ -3,7 +3,6 @@ use std::iter::Peekable;
 
 use crate::scanner::Data;
 use crate::scanner::Keyword;
-use crate::scanner::ScanError;
 use crate::scanner::Scanner;
 use crate::scanner::Symbol;
 use crate::scanner::Token;
@@ -104,40 +103,70 @@ impl<'a> Display for Expr<'a> {
     }
 }
 
+// Public error type that is returned from the API
 #[derive(Error, Debug)]
-#[error("parse error: {0}")]
-pub struct ParseError(String);
+#[error("parse error")]
+pub struct ParseError {}
 
+// For unwinding, we don't actually care that much about the internal cause which is reported through the reporter
 #[derive(Error, Debug)]
-enum InternalError<'code> {
-    #[error("scan error: {0}")]
-    ScanError(#[from] ScanError),
-    #[error("token mismatch: expected {expected:?}, found {found:?}")]
-    TokenMismatch {
-        expected: Vec<&'static str>,
-        found: Option<Token<'code>>,
-    },
+#[error("internal parse error")]
+struct InternalError {}
+
+pub trait ErrorReporter {
+    fn report(&mut self, token: &Token, message: &str);
 }
 
-pub fn parse<'arena, 'src>(
-    arena: &'arena Bump,
-    scanner: Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParseError> {
-    let mut peekable = scanner.peekable();
-    let result = expr(arena, &mut peekable).map_err(|err| ParseError(format!("{}", err)))?;
-    // Test for EOF
-    if let Some(_) = peekable.next() {
-        // TODO: This should provide some details about the token we hit
-        return Err(ParseError(format!("expected EOF")));
+struct StateTrackingReporter<'a, Reporter> {
+    reporter: &'a mut Reporter,
+    errored: bool,
+}
+
+/// Track whether or not an error actually occurred
+impl<'a, Reporter> ErrorReporter for StateTrackingReporter<'a, Reporter>
+where
+    Reporter: ErrorReporter,
+{
+    fn report(&mut self, token: &Token, message: &str) {
+        self.errored = true;
+        self.reporter.report(token, message);
     }
-    Ok(result)
 }
 
-fn expr<'arena, 'src>(
+pub fn parse<'arena, 'src, Reporter>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: Scanner<'src>,
+) -> Result<&'arena Expr<'arena>, ParseError>
+where
+    Reporter: ErrorReporter,
+{
+    let mut peekable = scanner.peekable();
+    let mut reporter = StateTrackingReporter {
+        reporter,
+        errored: false,
+    };
+    match expr(arena, &mut reporter, &mut peekable) {
+        Ok(expr) => {
+            if reporter.errored {
+                Err(ParseError {})
+            } else {
+                Ok(expr)
+            }
+        }
+        Err(e) => Err(ParseError {}),
+    }
+}
+
+fn expr<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>> {
-    equality(arena, scanner)
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    equality(arena, reporter, scanner)
 }
 
 // This encapsualtes the logic of the recursive parsing of levels of binary expression operators
@@ -156,139 +185,161 @@ const TERM_SYMBOLS: [Symbol; 2] = [Symbol::Minus, Symbol::Plus];
 
 const FACTOR_SYMBOLS: [Symbol; 2] = [Symbol::Star, Symbol::Slash];
 
-fn equality<'arena, 'src>(
+fn equality<'arena, 'src, Reporter>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>> {
-    left_recursive_binary_op(arena, scanner, &EQUALITY_SYMBOLS, comparison)
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    left_recursive_binary_op(arena, reporter, scanner, &EQUALITY_SYMBOLS, comparison)
 }
 
-fn comparison<'arena, 'src>(
+fn comparison<'arena, 'src, Reporter>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>> {
-    left_recursive_binary_op(arena, scanner, &COMPARISON_SYMBOLS, term)
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    left_recursive_binary_op(arena, reporter, scanner, &COMPARISON_SYMBOLS, term)
 }
 
-fn term<'arena, 'src>(
+fn term<'arena, 'src, Reporter>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>> {
-    left_recursive_binary_op(arena, scanner, &TERM_SYMBOLS, factor)
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    left_recursive_binary_op(arena, reporter, scanner, &TERM_SYMBOLS, factor)
 }
 
-fn factor<'arena, 'src>(
+fn factor<'arena, 'src, Reporter>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>> {
-    left_recursive_binary_op(arena, scanner, &FACTOR_SYMBOLS, unary)
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    left_recursive_binary_op(arena, reporter, scanner, &FACTOR_SYMBOLS, unary)
 }
 
 const UNARY_SYMBOLS: [Symbol; 2] = [Symbol::Minus, Symbol::Bang];
 
-fn unary<'arena, 'src>(
+fn unary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>> {
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
     if let Some(symbol) = symbol_from_set(&UNARY_SYMBOLS, scanner) {
         let operator = symbol_to_unary_op(symbol);
-        let right = unary(arena, scanner)?;
+        let right = unary(arena, reporter, scanner)?;
         Ok(arena.alloc(Expr::Unary {
             op: operator,
             expr: right,
         }))
     } else {
-        primary(arena, scanner)
+        primary(arena, reporter, scanner)
     }
 }
 
-fn primary<'arena, 'src>(
+fn primary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>> {
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
     // TODO: How to deal with the mismatch?
     if let Some(result) = scanner.next() {
-        let token = result?;
-        let expr = match token.data {
-            Data::Keyword {
-                keyword: Keyword::True,
-            } => arena.alloc(Expr::Literal(Literal::Boolean(true))),
-            Data::Keyword {
-                keyword: Keyword::False,
-            } => arena.alloc(Expr::Literal(Literal::Boolean(false))),
-            Data::Keyword {
-                keyword: Keyword::Nil,
-            } => arena.alloc(Expr::Literal(Literal::Nil)),
-            Data::String { string } => {
-                let ast_string = arena.alloc_str(string);
-                arena.alloc(Expr::Literal(Literal::String(ast_string)))
-            }
-            Data::Number { number } => {
-                arena.alloc(Expr::Literal(Literal::Number(OrderedFloat(number))))
-            }
-            Data::Symbol {
-                symbol: Symbol::LeftParen,
-            } => {
-                let inner = expr(arena, scanner)?;
-                let next_token = scanner.next();
-                if let Some(result) = next_token {
-                    let token = result?;
-                    match token.data {
-                        Data::Symbol {
-                            symbol: Symbol::RightParen,
-                        } => {
-                            // This is the happy path in that we have successfully matched the trailing group
-                            arena.alloc(Expr::Group(inner))
-                        }
-                        _ => {
-                            return Err(InternalError::TokenMismatch {
-                                expected: vec![")"],
-                                found: Some(token),
-                            })
+        match result {
+            Ok(token) => {
+                let expr = match token.data {
+                    Data::Keyword {
+                        keyword: Keyword::True,
+                    } => arena.alloc(Expr::Literal(Literal::Boolean(true))),
+                    Data::Keyword {
+                        keyword: Keyword::False,
+                    } => arena.alloc(Expr::Literal(Literal::Boolean(false))),
+                    Data::Keyword {
+                        keyword: Keyword::Nil,
+                    } => arena.alloc(Expr::Literal(Literal::Nil)),
+                    Data::String { string } => {
+                        let ast_string = arena.alloc_str(string);
+                        arena.alloc(Expr::Literal(Literal::String(ast_string)))
+                    }
+                    Data::Number { number } => {
+                        arena.alloc(Expr::Literal(Literal::Number(OrderedFloat(number))))
+                    }
+                    Data::Symbol {
+                        symbol: Symbol::LeftParen,
+                    } => {
+                        let inner = expr(arena, reporter, scanner)?;
+                        let next_token = scanner.next();
+                        if let Some(result) = next_token {
+                            match result {
+                                Ok(token) => {
+                                    match token.data {
+                                        Data::Symbol {
+                                            symbol: Symbol::RightParen,
+                                        } => {
+                                            // This is the happy path in that we have successfully matched the trailing group
+                                            arena.alloc(Expr::Group(inner))
+                                        }
+                                        _ => return Err(InternalError {}),
+                                    }
+                                }
+                                Err(e) => {
+                                    return Err(InternalError {});
+                                }
+                            }
+                        } else {
+                            return Err(InternalError {});
                         }
                     }
-                } else {
-                    return Err(InternalError::TokenMismatch {
-                        expected: vec![")"],
-                        found: None,
-                    });
-                }
+                    _ => {
+                        return Err(InternalError {});
+                    }
+                };
+                Ok(expr)
             }
-            _ => {
-                return Err(InternalError::TokenMismatch {
-                    // TODO: These shouldn't be strings
-                    expected: vec!["true", "false", "nil", "<number>", "<string>", "("],
-                    found: Some(token),
-                });
-            }
-        };
-        Ok(expr)
+            Err(e) => Err(InternalError {}),
+        }
     } else {
-        Err(InternalError::TokenMismatch {
-            expected: vec!["true", "false", "nil", "<number>", "<string>", "("],
-            found: None,
-        })
+        Err(InternalError {})
     }
 }
 
 // It occurs to me it might be possible to do this a single recursive call that unfolds generically
 // instead of encoding the recursion in separate helpers
-fn left_recursive_binary_op<'arena, 'src, F>(
+fn left_recursive_binary_op<'arena, 'src, Reporter, F>(
     arena: &'arena Bump,
+    reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
     symbols: &[Symbol],
     higher_precedence: F,
-) -> Result<&'arena Expr<'arena>, InternalError<'src>>
+) -> Result<&'arena Expr<'arena>, InternalError>
 where
+    Reporter: ErrorReporter,
     F: Fn(
         &'arena Bump,
+        &mut Reporter,
         &mut Peekable<Scanner<'src>>,
-    ) -> Result<&'arena Expr<'arena>, InternalError<'src>>,
+    ) -> Result<&'arena Expr<'arena>, InternalError>,
 {
-    let mut expr = higher_precedence(arena, scanner)?;
+    let mut expr = higher_precedence(arena, reporter, scanner)?;
     while let Some(symbol) = symbol_from_set(symbols, scanner) {
         let binary_op = symbol_to_binary_op(symbol);
-        let right = higher_precedence(arena, scanner)?;
+        let right = higher_precedence(arena, reporter, scanner)?;
         expr = arena.alloc(Expr::Binary {
             left: expr,
             op: binary_op,

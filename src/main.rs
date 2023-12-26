@@ -60,14 +60,15 @@ fn run_prompt() -> Result<()> {
 
 fn run(code: &str) -> Result<()> {
     let bump = Bump::new();
-    match parse(&bump, Scanner::new(code)) {
-        Ok(expr) => {
-            println!("{}", expr);
-            Ok(())
-        }
-        Err(err) => {
-            println!("{}", err);
-            bail!("parsing failed")
-        }
-    }
+    todo!();
+    // match parse(&bump, Scanner::new(code)) {
+    //     Ok(expr) => {
+    //         println!("{}", expr);
+    //         Ok(())
+    //     }
+    //     Err(err) => {
+    //         println!("{}", err);
+    //         bail!("parsing failed")
+    //     }
+    // }
 }
