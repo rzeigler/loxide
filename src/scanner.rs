@@ -18,14 +18,23 @@ impl Display for Pos {
 #[derive(Clone, Error, Debug, PartialEq, Eq)]
 #[error("scan error: {error:?} {pos}")]
 pub struct ScanError {
-    error: ScanErrorType,
-    pos: Pos,
+    pub error: ScanErrorType,
+    pub pos: Pos,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScanErrorType {
     UnterminatedString,
     UnrecognizedToken,
+}
+
+impl ScanErrorType {
+    pub fn message(&self) -> &'static str {
+        match self {
+            Self::UnterminatedString => "unterminated string",
+            Self::UnrecognizedToken => "unrecognized token",
+        }
+    }
 }
 
 /// A token in the input stream
@@ -46,29 +55,6 @@ pub enum Data<'code> {
     String { string: &'code str },
     Number { number: f64 },
     Eof,
-}
-
-/// Describe the type of a data without reference to the underlying data
-/// This is useful for referring to an expeted token rather than input data
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub enum DataType {
-    Symbol(Symbol),
-    Keyword(Keyword),
-    Identifier,
-    String,
-    Number,
-}
-
-impl Display for DataType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Symbol(sym) => sym.fmt(f),
-            Self::Keyword(kw) => kw.fmt(f),
-            Self::Identifier => f.write_str("identifier"),
-            Self::String => f.write_str("string"),
-            Self::Number => f.write_str("number"),
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -169,7 +155,7 @@ impl<'lex> Scanner<'lex> {
         }
     }
 
-    fn current_pos(&self) -> Pos {
+    pub fn current_pos(&self) -> Pos {
         Pos {
             line: self.line,
             offset_in_line: self.offset_in_line,

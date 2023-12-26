@@ -13,6 +13,8 @@ use bumpalo::Bump;
 use parser::parse;
 use scanner::Scanner;
 
+use crate::parser::WriteErrorReporter;
+
 fn main() -> Result<()> {
     let args = args();
     if args.len() > 2 {
@@ -60,15 +62,16 @@ fn run_prompt() -> Result<()> {
 
 fn run(code: &str) -> Result<()> {
     let bump = Bump::new();
-    todo!();
-    // match parse(&bump, Scanner::new(code)) {
-    //     Ok(expr) => {
-    //         println!("{}", expr);
-    //         Ok(())
-    //     }
-    //     Err(err) => {
-    //         println!("{}", err);
-    //         bail!("parsing failed")
-    //     }
-    // }
+    let mut stderr = std::io::stderr().lock();
+    let mut reporter = WriteErrorReporter::new(&mut stderr);
+    match parse(&bump, &mut reporter, Scanner::new(code)) {
+        Ok(expr) => {
+            println!("{}", expr);
+            Ok(())
+        }
+        Err(err) => {
+            println!("{}", err);
+            bail!("parsing failed")
+        }
+    }
 }

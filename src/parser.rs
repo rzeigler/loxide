@@ -1,8 +1,10 @@
 use std::fmt::Display;
+use std::io::Write;
 use std::iter::Peekable;
 
 use crate::scanner::Data;
 use crate::scanner::Keyword;
+use crate::scanner::Pos;
 use crate::scanner::Scanner;
 use crate::scanner::Symbol;
 use crate::scanner::Token;
@@ -114,22 +116,51 @@ pub struct ParseError {}
 struct InternalError {}
 
 pub trait ErrorReporter {
-    fn report(&mut self, token: &Token, message: &str);
+    fn report(&mut self, pos: Pos, message: &str);
 }
 
+pub struct WriteErrorReporter<'w, W>
+where
+    W: Write,
+{
+    // Store this as a mut reference so we can't accidentally lose something like stderr().lock() inside the reporter
+    // that doesn't go out of scope and cause a deadlock
+    write: &'w mut W,
+}
+
+impl<'w, W> WriteErrorReporter<'w, W>
+where
+    W: Write,
+{
+    pub fn new(write: &'w mut W) -> WriteErrorReporter<'w, W> {
+        WriteErrorReporter { write }
+    }
+}
+
+impl<'w, W> ErrorReporter for WriteErrorReporter<'w, W>
+where
+    W: Write,
+{
+    fn report(&mut self, pos: Pos, message: &str) {
+        // If w ecan't write to our output: 🤷🏻‍♂️
+        _ = write!(self.write, "error at {}: {}\n", pos, message);
+    }
+}
+
+/// Track whether or not an error actually occurred and delegate to another error reporter
+/// This is only meant to be used internally so that parse can piggy back on whether an error actually occurred
 struct StateTrackingReporter<'a, Reporter> {
     reporter: &'a mut Reporter,
     errored: bool,
 }
 
-/// Track whether or not an error actually occurred
 impl<'a, Reporter> ErrorReporter for StateTrackingReporter<'a, Reporter>
 where
     Reporter: ErrorReporter,
 {
-    fn report(&mut self, token: &Token, message: &str) {
+    fn report(&mut self, pos: Pos, message: &str) {
         self.errored = true;
-        self.reporter.report(token, message);
+        self.reporter.report(pos, message);
     }
 }
 
@@ -148,13 +179,34 @@ where
     };
     match expr(arena, &mut reporter, &mut peekable) {
         Ok(expr) => {
+            expect_eof(&mut reporter, &mut peekable);
             if reporter.errored {
                 Err(ParseError {})
             } else {
                 Ok(expr)
             }
         }
-        Err(e) => Err(ParseError {}),
+        Err(_) => Err(ParseError {}),
+    }
+}
+
+fn expect_eof<'src, Reporter>(reporter: &mut Reporter, scanner: &mut Peekable<Scanner<'src>>)
+where
+    Reporter: ErrorReporter,
+{
+    // If we expect the eof to be at this position, but we have already exhausted the token stream that means we
+    // already hit an eof unexpectedly which should have recorded an error there
+    if let Some(next) = scanner.next() {
+        match next {
+            Ok(token) => {
+                if token.data != Data::Eof {
+                    reporter.report(token.pos, "expected eof");
+                }
+            }
+            Err(e) => {
+                reporter.report(e.pos, "expected eof");
+            }
+        }
     }
 }
 
@@ -184,6 +236,21 @@ const COMPARISON_SYMBOLS: [Symbol; 4] = [
 const TERM_SYMBOLS: [Symbol; 2] = [Symbol::Minus, Symbol::Plus];
 
 const FACTOR_SYMBOLS: [Symbol; 2] = [Symbol::Star, Symbol::Slash];
+
+// All binary symbols, This is used for error production in primary to recover when we see a binary symbol without a
+// left hand operand
+const BINARY_SYMBOLS: [Symbol; 10] = [
+    Symbol::EqualEqual,
+    Symbol::BangEqual,
+    Symbol::Greater,
+    Symbol::GreaterEqual,
+    Symbol::Less,
+    Symbol::LessEqual,
+    Symbol::Minus,
+    Symbol::Plus,
+    Symbol::Star,
+    Symbol::Slash,
+];
 
 fn equality<'arena, 'src, Reporter>(
     arena: &'arena Bump,
@@ -259,7 +326,6 @@ fn primary<'arena, 'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    // TODO: How to deal with the mismatch?
     if let Some(result) = scanner.next() {
         match result {
             Ok(token) => {
@@ -295,27 +361,49 @@ where
                                             // This is the happy path in that we have successfully matched the trailing group
                                             arena.alloc(Expr::Group(inner))
                                         }
-                                        _ => return Err(InternalError {}),
+                                        _ => {
+                                            reporter.report(token.pos, "expected a ')'");
+                                            return Err(InternalError {});
+                                        }
                                     }
                                 }
-                                Err(e) => {
+                                Err(scan_err) => {
+                                    reporter.report(scan_err.pos, scan_err.error.message());
                                     return Err(InternalError {});
                                 }
                             }
                         } else {
-                            return Err(InternalError {});
+                            unreachable!("scanned past eof");
                         }
                     }
+                    // An unexpected binary symbol so lets try and parse the rhs before raising the error
+                    // - should be trapped by unary
+                    Data::Symbol { symbol }
+                        if BINARY_SYMBOLS.iter().find(|bin| **bin == symbol).is_some() =>
+                    {
+                        // Should this report something different?
+                        reporter.report(token.pos, "binary operator without a left-hand side");
+                        // result is unimportant, we are bailing anyway
+                        let _rhs = expr(arena, reporter, scanner);
+                        return Err(InternalError {});
+                    }
                     _ => {
+                        reporter.report(
+                            token.pos,
+                            "unexpected token: expected true, false, nil, number, string or (",
+                        );
                         return Err(InternalError {});
                     }
                 };
                 Ok(expr)
             }
-            Err(e) => Err(InternalError {}),
+            Err(scan_err) => {
+                reporter.report(scan_err.pos, scan_err.error.message());
+                Err(InternalError {})
+            }
         }
     } else {
-        Err(InternalError {})
+        unreachable!("scanned past eof");
     }
 }
 
