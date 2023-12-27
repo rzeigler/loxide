@@ -49,12 +49,30 @@ pub struct Token<'code> {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum Data<'code> {
-    Symbol { symbol: Symbol },
-    Keyword { keyword: Keyword },
-    Identifier { identifier: &'code str },
-    String { string: &'code str },
-    Number { number: f64 },
+    Symbol(Symbol),
+    Keyword(Keyword),
+    Identifier(&'code str),
+    String(&'code str),
+    Number(f64),
     Eof,
+}
+
+impl<'code> PartialEq<Symbol> for Data<'code> {
+    fn eq(&self, other: &Symbol) -> bool {
+        match self {
+            Data::Symbol(sym) => *sym == *other,
+            _ => false,
+        }
+    }
+}
+
+impl<'code> PartialEq<Keyword> for Data<'code> {
+    fn eq(&self, other: &Keyword) -> bool {
+        match self {
+            Data::Keyword(key) => *key == *other,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -71,6 +89,8 @@ pub enum Symbol {
     Semicolon,
     Slash,
     Star,
+    Question,
+    Colon,
 
     // One or two character tokens.
     Bang,
@@ -134,6 +154,13 @@ impl Display for Keyword {
     }
 }
 
+// TODO: Implementing this as an iterator has proven to be weird. It should probably implement somethign different
+// The iterator implementation is a holdover form the first version where we just wanted to print tokens
+// Subsequently, the Eof token was added because its always desirable have a position and a synthetic eof can exist for
+// Eof
+// So, we now have both Eof and None
+// It is assumed to be an error to scan past the Eof in lots of places in the parser
+// We should implement a custom iterator like protocol to account for this and remove all the unreachable bits
 #[derive(Clone)]
 pub struct Scanner<'lex> {
     code: &'lex str,
@@ -221,9 +248,7 @@ impl<'lex> Iterator for Scanner<'lex> {
             match ch {
                 '(' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::LeftParen,
-                        },
+                        data: Data::Symbol(Symbol::LeftParen),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -231,9 +256,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 ')' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::RightParen,
-                        },
+                        data: Data::Symbol(Symbol::RightParen),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -241,9 +264,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 '{' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::LeftBrace,
-                        },
+                        data: Data::Symbol(Symbol::LeftBrace),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -251,9 +272,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 '}' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::RightBrace,
-                        },
+                        data: Data::Symbol(Symbol::RightBrace),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -261,9 +280,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 ',' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::Comma,
-                        },
+                        data: Data::Symbol(Symbol::Comma),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -271,9 +288,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 '.' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::Dot,
-                        },
+                        data: Data::Symbol(Symbol::Dot),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -281,9 +296,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 '-' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::Minus,
-                        },
+                        data: Data::Symbol(Symbol::Minus),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -291,9 +304,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 '+' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::Plus,
-                        },
+                        data: Data::Symbol(Symbol::Plus),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -301,9 +312,23 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 ';' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::Semicolon,
-                        },
+                        data: Data::Symbol(Symbol::Semicolon),
+                        pos,
+                    };
+                    self.offset_in_line += 1;
+                    Some(Ok(token))
+                }
+                '?' => {
+                    let token = Token {
+                        data: Data::Symbol(Symbol::Question),
+                        pos,
+                    };
+                    self.offset_in_line += 1;
+                    Some(Ok(token))
+                }
+                ':' => {
+                    let token = Token {
+                        data: Data::Symbol(Symbol::Colon),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -311,9 +336,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                 }
                 '*' => {
                     let token = Token {
-                        data: Data::Symbol {
-                            symbol: Symbol::Star,
-                        },
+                        data: Data::Symbol(Symbol::Star),
                         pos,
                     };
                     self.offset_in_line += 1;
@@ -328,7 +351,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                         Symbol::Bang
                     };
                     Some(Ok(Token {
-                        data: Data::Symbol { symbol },
+                        data: Data::Symbol(symbol),
                         pos,
                     }))
                 }
@@ -341,7 +364,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                         Symbol::Equal
                     };
                     Some(Ok(Token {
-                        data: Data::Symbol { symbol },
+                        data: Data::Symbol(symbol),
                         pos,
                     }))
                 }
@@ -354,7 +377,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                         Symbol::Less
                     };
                     Some(Ok(Token {
-                        data: Data::Symbol { symbol },
+                        data: Data::Symbol(symbol),
                         pos,
                     }))
                 }
@@ -367,7 +390,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                         Symbol::Greater
                     };
                     Some(Ok(Token {
-                        data: Data::Symbol { symbol },
+                        data: Data::Symbol(symbol),
                         pos,
                     }))
                 }
@@ -385,9 +408,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                     } else {
                         self.offset_in_line += 1;
                         Some(Ok(Token {
-                            data: Data::Symbol {
-                                symbol: Symbol::Slash,
-                            },
+                            data: Data::Symbol(Symbol::Slash),
                             pos,
                         }))
                     }
@@ -423,7 +444,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                     let num_slice = unsafe { self.code_subslice(offset, num_len) };
                     let number = num_slice.parse::<f64>().unwrap();
                     let token = Token {
-                        data: Data::Number { number },
+                        data: Data::Number(number),
                         pos,
                     };
                     Some(Ok(token))
@@ -464,7 +485,7 @@ impl<'lex> Iterator for Scanner<'lex> {
                             self.code_subslice(offset + 1, str_len)
                         };
                         Some(Ok(Token {
-                            data: Data::String { string },
+                            data: Data::String(string),
                             pos,
                         }))
                     }
@@ -482,12 +503,12 @@ impl<'lex> Iterator for Scanner<'lex> {
                         .find(|(lit, _)| *lit == identifier)
                     {
                         Token {
-                            data: Data::Keyword { keyword: *kw },
+                            data: Data::Keyword(*kw),
                             pos,
                         }
                     } else {
                         Token {
-                            data: Data::Identifier { identifier },
+                            data: Data::Identifier(identifier),
                             pos,
                         }
                     };
@@ -523,7 +544,7 @@ mod test {
         let mut scanner = Scanner::new(&code);
         let first_token = scanner.next().unwrap().unwrap();
         match first_token.data {
-            Data::Keyword { keyword } => {
+            Data::Keyword(keyword) => {
                 assert_eq!(Keyword::Var, keyword);
                 assert_eq!(
                     Pos {
@@ -543,7 +564,7 @@ mod test {
         let mut scanner = Scanner::new(&code);
         let token = scanner.next().unwrap().unwrap();
         match token.data {
-            Data::Keyword { keyword } => {
+            Data::Keyword(keyword) => {
                 assert_eq!(Keyword::Var, keyword);
                 assert_eq!(
                     Pos {
@@ -558,7 +579,7 @@ mod test {
 
         let token = scanner.next().unwrap().unwrap();
         match token.data {
-            Data::Identifier { identifier } => {
+            Data::Identifier(identifier) => {
                 assert_eq!("marco", identifier);
                 assert_eq!(
                     Pos {
@@ -573,7 +594,7 @@ mod test {
 
         let token = scanner.next().unwrap().unwrap();
         match token.data {
-            Data::Symbol { symbol } => {
+            Data::Symbol(symbol) => {
                 assert_eq!(Symbol::Equal, symbol);
                 assert_eq!(
                     Pos {
@@ -588,7 +609,7 @@ mod test {
 
         let token = scanner.next().unwrap().unwrap();
         match token.data {
-            Data::String { string } => {
+            Data::String(string) => {
                 assert_eq!("9001", string);
                 assert_eq!(
                     Pos {
@@ -620,7 +641,7 @@ bomp";
         // Did we get a string?
         let token = scanner.next().unwrap().unwrap();
         match token.data {
-            Data::String { string } => {
+            Data::String(string) => {
                 assert_eq!("marco\nbomp", string);
                 assert_eq!(1, token.pos.line);
             }
@@ -629,7 +650,7 @@ bomp";
         // Did we correctly update the lines etc
         let token = scanner.next().unwrap().unwrap();
         match token.data {
-            Data::Symbol { symbol } => {
+            Data::Symbol(symbol) => {
                 assert_eq!(Symbol::Semicolon, symbol);
                 assert_eq!(
                     Pos {
