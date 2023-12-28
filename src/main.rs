@@ -71,12 +71,17 @@ fn run(code: &str) {
     let mut stderr = std::io::stderr().lock();
     let mut reporter = WriteErrorReporter::new(&mut stderr);
     match parse(&bump, &mut reporter, Scanner::new(code))
-        .context("invalid syntax")
-        .and_then(|expr| interpret(expr).context("runtime error"))
+        .with_context(|| "invalid syntax")
+        .and_then(|expr| interpret(expr).with_context(|| "runtime error"))
     {
         Ok(_) => {}
         Err(error) => {
-            eprintln!("{}", error)
+            let mut output = String::new();
+            for cause in error.chain() {
+                output.push_str(&cause.to_string());
+                output.push(' ');
+            }
+            eprintln!("{}", output)
         }
     }
 }
