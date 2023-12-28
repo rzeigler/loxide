@@ -1,16 +1,18 @@
 mod parser;
+mod runtime;
 mod scanner;
 
 use std::env::args;
 use std::fs::File;
 use std::io::prelude::*;
+use std::io::stdout;
 use std::io::BufReader;
 
-use anyhow::bail;
 use anyhow::{Context, Result};
 
 use bumpalo::Bump;
 use parser::parse;
+use runtime::interpret;
 use scanner::Scanner;
 
 use crate::parser::WriteErrorReporter;
@@ -30,7 +32,7 @@ fn main() -> Result<()> {
         let mut script = String::new();
         file.read_to_string(&mut script)
             .context("Unable to read script file")?;
-        run(&script)?;
+        run(&script);
     } else {
         run_prompt()?;
     }
@@ -38,40 +40,43 @@ fn main() -> Result<()> {
 }
 
 fn run_prompt() -> Result<()> {
-    let mut stdout = std::io::stdout().lock();
     let stdin = std::io::stdin().lock();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
 
     loop {
-        stdout.write("> ".as_bytes())?;
-        stdout.flush()?;
+        {
+            let mut stdout = stdout().lock();
+            stdout.write_all("> ".as_bytes()).unwrap();
+            stdout.flush()?;
+        }
         let n = reader.read_line(&mut line)?;
         if n == 0 {
             break;
         }
-        if let Err(e) = run(&line) {
-            println!("error: {}", e);
-        }
+        run(&line);
         // Don't keep appending code until the next time
         line.clear();
-        stdout.write("<\n".as_bytes())?;
+        {
+            let mut stdout = stdout().lock();
+            stdout.write_all("<\n".as_bytes()).unwrap();
+            stdout.flush().unwrap();
+        }
     }
     Ok(())
 }
 
-fn run(code: &str) -> Result<()> {
+fn run(code: &str) {
     let bump = Bump::new();
     let mut stderr = std::io::stderr().lock();
     let mut reporter = WriteErrorReporter::new(&mut stderr);
-    match parse(&bump, &mut reporter, Scanner::new(code)) {
-        Ok(expr) => {
-            println!("{}", expr);
-            Ok(())
-        }
-        Err(err) => {
-            println!("{}", err);
-            bail!("parsing failed")
+    match parse(&bump, &mut reporter, Scanner::new(code))
+        .context("invalid syntax")
+        .and_then(|expr| interpret(expr).context("runtime error"))
+    {
+        Ok(_) => {}
+        Err(error) => {
+            eprintln!("{}", error)
         }
     }
 }
