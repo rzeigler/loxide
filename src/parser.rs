@@ -8,9 +8,55 @@ use crate::scanner::Pos;
 use crate::scanner::Scanner;
 use crate::scanner::Symbol;
 use crate::scanner::Token;
+use bumpalo::collections::Vec;
 use bumpalo::Bump;
 use ordered_float::OrderedFloat;
 use thiserror::Error;
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct Program<'a>(pub Vec<'a, &'a Stmt<'a>>);
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stmt<'a> {
+    Expr(&'a Expr<'a>),
+    Print(&'a Expr<'a>),
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Expr<'a> {
+    Ternary {
+        test: &'a Expr<'a>,
+        if_true: &'a Expr<'a>,
+        if_false: &'a Expr<'a>,
+    },
+    Binary {
+        left: &'a Expr<'a>,
+        op: BinaryOp,
+        right: &'a Expr<'a>,
+    },
+    Unary {
+        op: UnaryOp,
+        expr: &'a Expr<'a>,
+    },
+    Group(&'a Expr<'a>),
+    Literal(Literal<'a>),
+}
+
+impl<'a> Display for Expr<'a> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Expr::Literal(lit) => write!(f, "{}", lit),
+            Expr::Group(expr) => write!(f, "(group {})", expr),
+            Expr::Unary { op, expr } => write!(f, "({} {})", op, expr),
+            Expr::Binary { left, op, right } => write!(f, "({} {} {})", op, left, right),
+            Expr::Ternary {
+                test,
+                if_true,
+                if_false,
+            } => write!(f, "(? {} : {} {})", test, if_true, if_false),
+        }
+    }
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum BinaryOp {
@@ -73,42 +119,6 @@ impl<'a> Display for Literal<'a> {
             Literal::String(s) => f.write_str(s),
             Literal::Boolean(b) => write!(f, "{}", b),
             Literal::Nil => f.write_str("nil"),
-        }
-    }
-}
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum Expr<'a> {
-    Ternary {
-        test: &'a Expr<'a>,
-        if_true: &'a Expr<'a>,
-        if_false: &'a Expr<'a>,
-    },
-    Binary {
-        left: &'a Expr<'a>,
-        op: BinaryOp,
-        right: &'a Expr<'a>,
-    },
-    Unary {
-        op: UnaryOp,
-        expr: &'a Expr<'a>,
-    },
-    Group(&'a Expr<'a>),
-    Literal(Literal<'a>),
-}
-
-impl<'a> Display for Expr<'a> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Expr::Literal(lit) => write!(f, "{}", lit),
-            Expr::Group(expr) => write!(f, "(group {})", expr),
-            Expr::Unary { op, expr } => write!(f, "({} {})", op, expr),
-            Expr::Binary { left, op, right } => write!(f, "({} {} {})", op, left, right),
-            Expr::Ternary {
-                test,
-                if_true,
-                if_false,
-            } => write!(f, "(? {} : {} {})", test, if_true, if_false),
         }
     }
 }
@@ -176,7 +186,7 @@ pub fn parse<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParseError>
+) -> Result<Program<'arena>, ParseError>
 where
     Reporter: ErrorReporter,
 {
@@ -185,16 +195,15 @@ where
         reporter,
         errored: false,
     };
-    match expr(arena, &mut reporter, &mut peekable) {
-        Ok(expr) => {
-            expect_eof(&mut reporter, &mut peekable);
-            if reporter.errored {
-                Err(ParseError {})
-            } else {
-                Ok(expr)
-            }
+    if let Ok(program) = program(arena, &mut reporter, &mut peekable) {
+        expect_eof(&mut reporter, &mut peekable);
+        if reporter.errored {
+            Err(ParseError {})
+        } else {
+            Ok(program)
         }
-        Err(_) => Err(ParseError {}),
+    } else {
+        Err(ParseError {})
     }
 }
 
@@ -216,6 +225,72 @@ where
             }
         }
     }
+}
+
+fn program<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Peekable<Scanner<'src>>,
+) -> Result<Program<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    let mut stmts = Vec::<&'arena Stmt<'arena>>::new_in(arena);
+    while !is_at_eof(scanner) {
+        stmts.push(stmt(arena, reporter, scanner)?);
+    }
+    Ok(Program(stmts))
+}
+
+fn stmt<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Peekable<Scanner<'src>>,
+) -> Result<&'arena Stmt<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    if consume_next_keyword_eq(Keyword::Print, scanner) {
+        print_stmt(arena, reporter, scanner)
+    } else {
+        expr_stmt(arena, reporter, scanner)
+    }
+}
+
+fn print_stmt<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Peekable<Scanner<'src>>,
+) -> Result<&'arena Stmt<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    let expr = expr(arena, reporter, scanner)?;
+    consume_next_symbol_or_err(
+        Symbol::Semicolon,
+        "expected ';' after an expression",
+        reporter,
+        scanner,
+    )?;
+    Ok(arena.alloc(Stmt::Print(expr)))
+}
+
+fn expr_stmt<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Peekable<Scanner<'src>>,
+) -> Result<&'arena Stmt<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    let expr = expr(arena, reporter, scanner)?;
+    consume_next_symbol_or_err(
+        Symbol::Semicolon,
+        "expected ';' after an expression",
+        reporter,
+        scanner,
+    )?;
+    Ok(arena.alloc(Stmt::Expr(expr)))
 }
 
 fn expr<'arena, 'src, Reporter>(
@@ -490,6 +565,7 @@ fn consume_next_symbol_eq(
     required_next: Symbol,
     scanner: &mut Peekable<Scanner<'_>>,
 ) -> Option<Symbol> {
+    // TODO: Change to -> bool to align with consume_next_keyword_eq
     let result = if let Some(token) = scanner.peek() {
         match token {
             Ok(Token {
@@ -532,6 +608,27 @@ where
                 reporter.report(scan_err.pos, scan_err.error.message());
                 Err(InternalError {})
             }
+        }
+    } else {
+        unreachable!("scanned past eof");
+    }
+}
+
+fn consume_next_keyword_eq(required_next: Keyword, scanner: &mut Peekable<Scanner<'_>>) -> bool {
+    scanner
+        .next_if(|item| match item {
+            Ok(Token { data, pos: _ }) => *data == required_next,
+            _ => false,
+        })
+        // We only accept on the Ok branch
+        .is_some()
+}
+
+fn is_at_eof(scanner: &mut Peekable<Scanner>) -> bool {
+    if let Some(next) = scanner.peek() {
+        match next {
+            Ok(token) => token.data == Data::Eof,
+            Err(_) => false,
         }
     } else {
         unreachable!("scanned past eof");

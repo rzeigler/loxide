@@ -7,7 +7,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::parser::{BinaryOp, Expr, Literal, UnaryOp};
+use crate::parser::{BinaryOp, Expr, Literal, Program, Stmt, UnaryOp};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -110,17 +110,22 @@ impl From<Value> for bool {
     }
 }
 
-pub fn interpret(expr: &Expr) -> Result<(), RuntimeError> {
-    match eval(expr) {
-        Ok(result) => {
-            println!("{}", result);
-            Ok(())
-        }
-        Err(error) => Err(error),
+pub fn interpret(expr: Program) -> Result<(), RuntimeError> {
+    for stmt in expr.0 {
+        execute(stmt)?;
     }
+    Ok(())
 }
 
-pub fn eval(expr: &Expr) -> Result<Value, RuntimeError> {
+fn execute(stmt: &Stmt) -> Result<(), RuntimeError> {
+    match stmt {
+        Stmt::Print(expr) => println!("{}", eval(expr)?),
+        Stmt::Expr(expr) => _ = eval(expr)?,
+    }
+    Ok(())
+}
+
+fn eval(expr: &Expr) -> Result<Value, RuntimeError> {
     match expr {
         Expr::Ternary {
             test,
