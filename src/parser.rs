@@ -18,6 +18,10 @@ pub struct Program<'a>(pub Vec<'a, &'a Stmt<'a>>);
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Stmt<'a> {
+    VarDecl {
+        identifier: &'a str,
+        expr: &'a Expr<'a>,
+    },
     Expr(&'a Expr<'a>),
     Print(&'a Expr<'a>),
 }
@@ -40,6 +44,11 @@ pub enum Expr<'a> {
     },
     Group(&'a Expr<'a>),
     Literal(Literal<'a>),
+    Identifier(&'a str),
+    Assignment {
+        target: &'a str,
+        expr: &'a Expr<'a>,
+    },
 }
 
 impl<'a> Display for Expr<'a> {
@@ -54,6 +63,8 @@ impl<'a> Display for Expr<'a> {
                 if_true,
                 if_false,
             } => write!(f, "(? {} : {} {})", test, if_true, if_false),
+            Expr::Identifier(id) => write!(f, "(ident {})", id),
+            Expr::Assignment { target, expr } => write!(f, "(= {} {})", target, expr),
         }
     }
 }
@@ -237,12 +248,68 @@ where
 {
     let mut stmts = Vec::<&'arena Stmt<'arena>>::new_in(arena);
     while !is_at_eof(scanner) {
-        stmts.push(stmt(arena, reporter, scanner)?);
+        match declaration(arena, reporter, scanner) {
+            Ok(stmt) => stmts.push(stmt),
+            Err(_) => synchronize(scanner),
+        }
     }
     Ok(Program(stmts))
 }
 
-fn stmt<'arena, 'src, Reporter>(
+fn synchronize(scanner: &mut Peekable<Scanner>) {
+    // Consume tokens until we have consumed a ';'
+    // Avoid consuming EOF
+    loop {
+        let next = scanner.peek().expect("scanned past eof");
+        match next {
+            Ok(token) if token.data == Symbol::Semicolon => {
+                _ = scanner.next().unwrap();
+                break;
+            }
+            Ok(token) if token.data == Data::Eof => {
+                // Leave the EOF inplace
+                break;
+            }
+            _ => {
+                // Consume the token we saw
+                let _ = scanner.next().unwrap();
+            }
+        }
+    }
+}
+
+fn declaration<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Peekable<Scanner<'src>>,
+) -> Result<&'arena Stmt<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    if consume_next_keyword_eq(Keyword::Var, scanner) {
+        let identifier = consume_next_identifier(arena, reporter, scanner)?;
+        let initializer = if consume_if_next_symbol_eq(Symbol::Equal, scanner) {
+            expr(arena, reporter, scanner)?
+        } else {
+            // Generate a synthetic initializer as the constant null
+            arena.alloc(Expr::Literal(Literal::Nil))
+        };
+        require_next_symbol(
+            Symbol::Semicolon,
+            "expected ';' after an expression",
+            reporter,
+            scanner,
+        )?;
+        Ok(arena.alloc(Stmt::VarDecl {
+            identifier,
+            expr: initializer,
+        }))
+    } else {
+        statement(arena, reporter, scanner)
+    }
+}
+
+fn statement<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Peekable<Scanner<'src>>,
@@ -266,7 +333,7 @@ where
     Reporter: ErrorReporter,
 {
     let expr = expr(arena, reporter, scanner)?;
-    consume_next_symbol_or_err(
+    require_next_symbol(
         Symbol::Semicolon,
         "expected ';' after an expression",
         reporter,
@@ -284,7 +351,7 @@ where
     Reporter: ErrorReporter,
 {
     let expr = expr(arena, reporter, scanner)?;
-    consume_next_symbol_or_err(
+    require_next_symbol(
         Symbol::Semicolon,
         "expected ';' after an expression",
         reporter,
@@ -301,6 +368,24 @@ fn expr<'arena, 'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
+    assignment(arena, reporter, scanner)
+}
+
+fn assignment<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Peekable<Scanner<'src>>,
+) -> Result<&'arena Expr<'arena>, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    // let expr = equality(arena, reporter, scanner)
+    // if consume_if_next_symbol_eq(Symbol::Equal, scanner) {
+    //     // TODO: Consume this by loop rather than recursion
+
+    // } else {
+    //     expr
+    // }
     equality(arena, reporter, scanner)
 }
 
@@ -355,11 +440,11 @@ where
     Reporter: ErrorReporter,
 {
     let expr = comparison(arena, reporter, scanner)?;
-    if consume_next_symbol_eq(Symbol::Question, scanner).is_none() {
+    if !consume_if_next_symbol_eq(Symbol::Question, scanner) {
         Ok(expr)
     } else {
         let if_true = comparison(arena, reporter, scanner)?;
-        consume_next_symbol_or_err(Symbol::Colon, "expected a ':'", reporter, scanner)?;
+        require_next_symbol(Symbol::Colon, "expected a ':'", reporter, scanner)?;
         let if_false = comparison(arena, reporter, scanner)?;
         Ok(arena.alloc(Expr::Ternary {
             test: expr,
@@ -412,7 +497,7 @@ fn unary<'arena, 'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    if let Some(symbol) = consume_next_symbol_from_set(&UNARY_SYMBOLS, scanner) {
+    if let Some(symbol) = consume_if_next_symbol_in(&UNARY_SYMBOLS, scanner) {
         let operator = symbol_to_unary_op(symbol);
         let right = unary(arena, reporter, scanner)?;
         Ok(arena.alloc(Expr::Unary {
@@ -476,6 +561,9 @@ where
                             unreachable!("scanned past eof");
                         }
                     }
+                    Data::Identifier(ident) => {
+                        arena.alloc(Expr::Identifier(arena.alloc_str(ident)))
+                    }
                     // An unexpected binary symbol so lets try and parse the rhs before raising the error
                     // - should be trapped by unary
                     Data::Symbol(symbol)
@@ -525,7 +613,7 @@ where
     ) -> Result<&'arena Expr<'arena>, InternalError>,
 {
     let mut expr = higher_precedence(arena, reporter, scanner)?;
-    while let Some(symbol) = consume_next_symbol_from_set(symbols, scanner) {
+    while let Some(symbol) = consume_if_next_symbol_in(symbols, scanner) {
         let binary_op = symbol_to_binary_op(symbol);
         let right = higher_precedence(arena, reporter, scanner)?;
         expr = arena.alloc(Expr::Binary {
@@ -537,8 +625,33 @@ where
     Ok(expr)
 }
 
+fn consume_next_identifier<'code, Reporter>(
+    arena: &'code Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Peekable<Scanner>,
+) -> Result<&'code str, InternalError>
+where
+    Reporter: ErrorReporter,
+{
+    let next = scanner.next().expect("scanned past eof");
+    match next {
+        Ok(Token {
+            data: Data::Identifier(identifier),
+            pos: _,
+        }) => Ok(arena.alloc_str(identifier)),
+        Ok(Token { data: _, pos }) => {
+            reporter.report(pos, "expected identifier");
+            Err(InternalError {})
+        }
+        Err(err) => {
+            reporter.report(err.pos, err.error.message());
+            Err(InternalError {})
+        }
+    }
+}
+
 // Consume and return the next token from the scanner if it is a symbol from the provided set
-fn consume_next_symbol_from_set(
+fn consume_if_next_symbol_in(
     set: &[Symbol],
     scanner: &mut Peekable<Scanner<'_>>,
 ) -> Option<Symbol> {
@@ -561,31 +674,38 @@ fn consume_next_symbol_from_set(
 }
 
 // Consume and return the next token from the scanner if matches the given symbol
-fn consume_next_symbol_eq(
-    required_next: Symbol,
-    scanner: &mut Peekable<Scanner<'_>>,
-) -> Option<Symbol> {
+fn consume_if_next_symbol_eq(required_next: Symbol, scanner: &mut Peekable<Scanner<'_>>) -> bool {
     // TODO: Change to -> bool to align with consume_next_keyword_eq
-    let result = if let Some(token) = scanner.peek() {
-        match token {
-            Ok(Token {
-                data: Data::Symbol(symbol),
-                pos: _,
-            }) if required_next == *symbol => Some(*symbol),
-            _ => None,
+    let token = scanner.peek().expect("scanned past eof");
+    match token {
+        Ok(Token {
+            data: Data::Symbol(symbol),
+            pos: _,
+        }) if required_next == *symbol => {
+            _ = scanner.next().unwrap();
+            true
         }
-    } else {
-        unreachable!("scanned past eof")
+        _ => false,
+    }
+}
+
+fn consume_if_next_identifier<'code>(scanner: &mut Peekable<Scanner<'code>>) -> Option<&'code str> {
+    let token = scanner.peek().expect("scanned past eof");
+    let result = match token {
+        Ok(Token {
+            data: Data::Identifier(ident),
+            pos: _,
+        }) => Some(*ident),
+        _ => None,
     };
-    // Consume the symbol that we peeked previously
     if result.is_some() {
-        _ = scanner.next().unwrap();
+        let _ = scanner.next().unwrap();
     }
     result
 }
 
 // Consume the next token from the scanner. Error if it does not match the given input
-fn consume_next_symbol_or_err<Reporter>(
+fn require_next_symbol<Reporter>(
     required_next: Symbol,
     err_msg: &str,
     reporter: &mut Reporter,
@@ -594,23 +714,22 @@ fn consume_next_symbol_or_err<Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    if let Some(next) = scanner.next() {
-        match next {
-            Ok(token) => {
-                if token.data == required_next {
-                    Ok(())
-                } else {
-                    reporter.report(token.pos, err_msg);
-                    Err(InternalError {})
-                }
-            }
-            Err(scan_err) => {
-                reporter.report(scan_err.pos, scan_err.error.message());
+    // Don't consume it if it doesn't match so synchronize can
+    let next = scanner.peek().expect("scanned past eof");
+    match next {
+        Ok(token) => {
+            if token.data == required_next {
+                _ = scanner.next().unwrap();
+                Ok(())
+            } else {
+                reporter.report(token.pos, err_msg);
                 Err(InternalError {})
             }
         }
-    } else {
-        unreachable!("scanned past eof");
+        Err(scan_err) => {
+            reporter.report(scan_err.pos, scan_err.error.message());
+            Err(InternalError {})
+        }
     }
 }
 

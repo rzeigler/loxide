@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 
 use bumpalo::Bump;
 use parser::parse;
-use runtime::interpret;
+use runtime::Interpreter;
 use scanner::Scanner;
 
 use crate::parser::WriteErrorReporter;
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
         let mut script = String::new();
         file.read_to_string(&mut script)
             .context("Unable to read script file")?;
-        run(&script);
+        run(&mut Interpreter::new(), &script);
     } else {
         run_prompt()?;
     }
@@ -43,7 +43,7 @@ fn run_prompt() -> Result<()> {
     let stdin = std::io::stdin().lock();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
-
+    let mut interpreter = Interpreter::new();
     loop {
         {
             let mut stdout = stdout().lock();
@@ -54,7 +54,7 @@ fn run_prompt() -> Result<()> {
         if n == 0 {
             break;
         }
-        run(&line);
+        run(&mut interpreter, &line);
         // Don't keep appending code until the next time
         line.clear();
         {
@@ -66,13 +66,13 @@ fn run_prompt() -> Result<()> {
     Ok(())
 }
 
-fn run(code: &str) {
+fn run(interpreter: &mut Interpreter, code: &str) {
     let bump = Bump::new();
     let mut stderr = std::io::stderr().lock();
     let mut reporter = WriteErrorReporter::new(&mut stderr);
     match parse(&bump, &mut reporter, Scanner::new(code))
         .with_context(|| "invalid syntax")
-        .and_then(|expr| interpret(expr).with_context(|| "runtime error"))
+        .and_then(|prg| interpreter.interpret(prg).with_context(|| "runtime error"))
     {
         Ok(_) => {}
         Err(error) => {

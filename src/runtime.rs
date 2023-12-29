@@ -1,4 +1,5 @@
 use std::{
+    collections::HashMap,
     convert::From,
     fmt::Display,
     ops::{Add, Div, Mul, Sub},
@@ -15,6 +16,8 @@ pub enum RuntimeError {
     DivideByZero,
     #[error("type error")]
     TypeError,
+    #[error("unbound variable")]
+    UnboundVariable(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,67 +113,97 @@ impl From<Value> for bool {
     }
 }
 
-pub fn interpret(expr: Program) -> Result<(), RuntimeError> {
-    for stmt in expr.0 {
-        execute(stmt)?;
-    }
-    Ok(())
+pub struct Interpreter {
+    memory: HashMap<String, Value>,
 }
 
-fn execute(stmt: &Stmt) -> Result<(), RuntimeError> {
-    match stmt {
-        Stmt::Print(expr) => println!("{}", eval(expr)?),
-        Stmt::Expr(expr) => _ = eval(expr)?,
+impl Interpreter {
+    pub fn new() -> Interpreter {
+        Interpreter {
+            memory: HashMap::<String, Value>::new(),
+        }
     }
-    Ok(())
-}
 
-fn eval(expr: &Expr) -> Result<Value, RuntimeError> {
-    match expr {
-        Expr::Ternary {
-            test,
-            if_true,
-            if_false,
-        } => {
-            if eval(test)?.into() {
-                eval(if_true)
-            } else {
-                eval(if_false)
-            }
+    pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
+        for stmt in expr.0 {
+            self.execute(stmt)?;
         }
-        Expr::Binary { left, op, right } => {
-            let lhs = eval(left)?;
-            let rhs = eval(right)?;
-            match op {
-                BinaryOp::Equal => Ok(Value::Bool(eq(lhs, rhs))),
-                BinaryOp::NotEqual => Ok(Value::Bool(!eq(lhs, rhs))),
-                BinaryOp::LessThan => Ok(Value::Bool(lt(lhs, rhs))),
-                // TODO: Lazy impls that clone and re-use lt and eq
-                BinaryOp::LessThanEqual => {
-                    Ok(Value::Bool(lt(lhs.clone(), rhs.clone()) || eq(lhs, rhs)))
+        Ok(())
+    }
+
+    fn execute(&mut self, stmt: &Stmt) -> Result<(), RuntimeError> {
+        match stmt {
+            Stmt::VarDecl { identifier, expr } => {
+                let v = self.eval(expr)?;
+                self.memory.insert(identifier.to_string(), v);
+            }
+            Stmt::Print(expr) => println!("{}", self.eval(expr)?),
+            Stmt::Expr(expr) => _ = self.eval(expr)?,
+        }
+        Ok(())
+    }
+
+    fn eval(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
+        match expr {
+            Expr::Ternary {
+                test,
+                if_true,
+                if_false,
+            } => {
+                if self.eval(test)?.into() {
+                    self.eval(if_true)
+                } else {
+                    self.eval(if_false)
                 }
-                BinaryOp::GreaterThan => {
-                    Ok(Value::Bool(!lt(lhs.clone(), rhs.clone()) && !eq(lhs, rhs)))
+            }
+            Expr::Binary { left, op, right } => {
+                let lhs = self.eval(left)?;
+                let rhs = self.eval(right)?;
+                match op {
+                    BinaryOp::Equal => Ok(Value::Bool(eq(lhs, rhs))),
+                    BinaryOp::NotEqual => Ok(Value::Bool(!eq(lhs, rhs))),
+                    BinaryOp::LessThan => Ok(Value::Bool(lt(lhs, rhs))),
+                    // TODO: Lazy impls that clone and re-use lt and eq
+                    BinaryOp::LessThanEqual => {
+                        Ok(Value::Bool(lt(lhs.clone(), rhs.clone()) || eq(lhs, rhs)))
+                    }
+                    BinaryOp::GreaterThan => {
+                        Ok(Value::Bool(!lt(lhs.clone(), rhs.clone()) && !eq(lhs, rhs)))
+                    }
+                    BinaryOp::GreaterThanEqual => Ok(Value::Bool(!lt(lhs, rhs))),
+                    BinaryOp::Add => lhs + rhs,
+                    BinaryOp::Multiply => lhs * rhs,
+                    BinaryOp::Subtract => lhs - rhs,
+                    BinaryOp::Divide => lhs / rhs,
                 }
-                BinaryOp::GreaterThanEqual => Ok(Value::Bool(!lt(lhs, rhs))),
-                BinaryOp::Add => lhs + rhs,
-                BinaryOp::Multiply => lhs * rhs,
-                BinaryOp::Subtract => lhs - rhs,
-                BinaryOp::Divide => lhs / rhs,
+            }
+            Expr::Unary { op, expr } => {
+                let val = self.eval(expr)?;
+                match op {
+                    UnaryOp::Not => Ok(Value::Bool(!bool::from(val))),
+                    UnaryOp::Negative => Value::Number(-1f64) * val,
+                }
+            }
+            Expr::Group(expr) => self.eval(expr),
+            Expr::Literal(Literal::Number(f)) => Ok(Value::Number(**f)),
+            Expr::Literal(Literal::String(s)) => Ok(Value::String(Rc::new(s.to_string()))),
+            Expr::Literal(Literal::Boolean(b)) => Ok(Value::Bool(*b)),
+            Expr::Literal(Literal::Nil) => Ok(Value::Nil),
+            Expr::Identifier(ident) => self
+                .memory
+                .get(*ident)
+                .cloned()
+                .ok_or(RuntimeError::UnboundVariable(ident.to_string())),
+            Expr::Assignment { target, expr } => {
+                let value = self.eval(expr)?;
+                let lvalue = self
+                    .memory
+                    .get_mut(*target)
+                    .ok_or(RuntimeError::UnboundVariable(target.to_string()))?;
+                *lvalue = value;
+                Ok(lvalue.clone())
             }
         }
-        Expr::Unary { op, expr } => {
-            let val = eval(expr)?;
-            match op {
-                UnaryOp::Not => Ok(Value::Bool(!bool::from(val))),
-                UnaryOp::Negative => Value::Number(-1f64) * val,
-            }
-        }
-        Expr::Group(expr) => eval(expr),
-        Expr::Literal(Literal::Number(f)) => Ok(Value::Number(**f)),
-        Expr::Literal(Literal::String(s)) => Ok(Value::String(Rc::new(s.to_string()))),
-        Expr::Literal(Literal::Boolean(b)) => Ok(Value::Bool(*b)),
-        Expr::Literal(Literal::Nil) => Ok(Value::Nil),
     }
 }
 
