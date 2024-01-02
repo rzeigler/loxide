@@ -1,13 +1,12 @@
 use std::fmt::Display;
 use std::io::Write;
-use std::iter::Peekable;
 
-use crate::scanner::Data;
 use crate::scanner::Keyword;
 use crate::scanner::Pos;
 use crate::scanner::Scanner;
 use crate::scanner::Symbol;
 use crate::scanner::Token;
+use crate::scanner::TokenType;
 use bumpalo::collections::Vec;
 use bumpalo::Bump;
 use ordered_float::OrderedFloat;
@@ -196,18 +195,17 @@ where
 pub fn parse<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: Scanner<'src>,
+    mut scanner: Scanner<'src>,
 ) -> Result<Program<'arena>, ParseError>
 where
     Reporter: ErrorReporter,
 {
-    let mut peekable = scanner.peekable();
     let mut reporter = StateTrackingReporter {
         reporter,
         errored: false,
     };
-    if let Ok(program) = program(arena, &mut reporter, &mut peekable) {
-        expect_eof(&mut reporter, &mut peekable);
+    if let Ok(program) = program(arena, &mut reporter, &mut scanner) {
+        expect_eof(&mut reporter, &mut scanner);
         if reporter.errored {
             Err(ParseError {})
         } else {
@@ -218,22 +216,21 @@ where
     }
 }
 
-fn expect_eof<'src, Reporter>(reporter: &mut Reporter, scanner: &mut Peekable<Scanner<'src>>)
+fn expect_eof<'src, Reporter>(reporter: &mut Reporter, scanner: &mut Scanner<'src>)
 where
     Reporter: ErrorReporter,
 {
-    // If we expect the eof to be at this position, but we have already exhausted the token stream that means we
-    // already hit an eof unexpectedly which should have recorded an error there
-    if let Some(next) = scanner.next() {
-        match next {
-            Ok(token) => {
-                if token.data != Data::Eof {
-                    reporter.report(token.pos, "expected eof");
-                }
-            }
-            Err(e) => {
-                reporter.report(e.pos, "expected eof");
-            }
+    match scanner.next() {
+        // This is the success case so do nothing
+        Ok(Token {
+            data: TokenType::Eof,
+            pos: _,
+        }) => {}
+        Ok(Token { data: _, pos }) => {
+            reporter.report(pos, "expected eof");
+        }
+        Err(err) => {
+            reporter.report(err.pos, "expected eof");
         }
     }
 }
@@ -241,13 +238,13 @@ where
 fn program<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<Program<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
     let mut stmts = Vec::<&'arena Stmt<'arena>>::new_in(arena);
-    while !is_at_eof(scanner) {
+    while !scanner.is_at_eof() {
         match declaration(arena, reporter, scanner) {
             Ok(stmt) => stmts.push(stmt),
             Err(_) => synchronize(scanner),
@@ -256,17 +253,17 @@ where
     Ok(Program(stmts))
 }
 
-fn synchronize(scanner: &mut Peekable<Scanner>) {
+fn synchronize(scanner: &mut Scanner) {
     // Consume tokens until we have consumed a ';'
-    // Avoid consuming EOF
+    // Avoid consuming EOF since we can abort there
     loop {
-        let next = scanner.peek().expect("scanned past eof");
+        let next = scanner.peek();
         match next {
             Ok(token) if token.data == Symbol::Semicolon => {
                 _ = scanner.next().unwrap();
                 break;
             }
-            Ok(token) if token.data == Data::Eof => {
+            Ok(token) if token.data == TokenType::Eof => {
                 // Leave the EOF inplace
                 break;
             }
@@ -281,25 +278,38 @@ fn synchronize(scanner: &mut Peekable<Scanner>) {
 fn declaration<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Stmt<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
-    if consume_next_keyword_eq(Keyword::Var, scanner) {
-        let identifier = consume_next_identifier(arena, reporter, scanner)?;
-        let initializer = if consume_if_next_symbol_eq(Symbol::Equal, scanner) {
+    if scanner.next_if(|data| *data == Keyword::Var).is_some() {
+        let identifier = {
+            match scanner.next() {
+                Ok(Token {
+                    data: TokenType::Identifier(identifier),
+                    pos: _,
+                }) => arena.alloc_str(identifier), // Copy into the AST arena
+                Ok(token) => {
+                    reporter.report(token.pos, "expected an identifier");
+                    return Err(InternalError {});
+                }
+                Err(err) => {
+                    reporter.report(err.pos, "expected an identifier");
+                    return Err(InternalError {});
+                }
+            }
+        };
+        let initializer = if scanner.next_if(|next| *next == Symbol::Equal).is_some() {
             expr(arena, reporter, scanner)?
         } else {
             // Generate a synthetic initializer as the constant null
             arena.alloc(Expr::Literal(Literal::Nil))
         };
-        require_next_symbol(
-            Symbol::Semicolon,
-            "expected ';' after an expression",
-            reporter,
-            scanner,
-        )?;
+        if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
+            reporter.report(pos, "expected ';' after an expression");
+            return Err(InternalError {});
+        }
         Ok(arena.alloc(Stmt::VarDecl {
             identifier,
             expr: initializer,
@@ -312,12 +322,12 @@ where
 fn statement<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Stmt<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
-    if consume_next_keyword_eq(Keyword::Print, scanner) {
+    if scanner.next_if(|next| *next == Keyword::Print).is_some() {
         print_stmt(arena, reporter, scanner)
     } else {
         expr_stmt(arena, reporter, scanner)
@@ -327,43 +337,39 @@ where
 fn print_stmt<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Stmt<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
     let expr = expr(arena, reporter, scanner)?;
-    require_next_symbol(
-        Symbol::Semicolon,
-        "expected ';' after an expression",
-        reporter,
-        scanner,
-    )?;
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
+        reporter.report(pos, "expected ';' after an expression");
+        return Err(InternalError {});
+    }
     Ok(arena.alloc(Stmt::Print(expr)))
 }
 
 fn expr_stmt<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Stmt<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
     let expr = expr(arena, reporter, scanner)?;
-    require_next_symbol(
-        Symbol::Semicolon,
-        "expected ';' after an expression",
-        reporter,
-        scanner,
-    )?;
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
+        reporter.report(pos, "expected ';' after an expression");
+        return Err(InternalError {});
+    }
     Ok(arena.alloc(Stmt::Expr(expr)))
 }
 
 fn expr<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
@@ -374,7 +380,7 @@ where
 fn assignment<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
@@ -423,7 +429,7 @@ const BINARY_SYMBOLS: [Symbol; 10] = [
 fn equality<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
@@ -434,17 +440,20 @@ where
 fn ternary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
     let expr = comparison(arena, reporter, scanner)?;
-    if !consume_if_next_symbol_eq(Symbol::Question, scanner) {
+    if scanner.next_if(|next| *next == Symbol::Question).is_none() {
         Ok(expr)
     } else {
         let if_true = comparison(arena, reporter, scanner)?;
-        require_next_symbol(Symbol::Colon, "expected a ':'", reporter, scanner)?;
+        if let Err(pos) = expect_next_symbol(scanner, Symbol::Colon) {
+            reporter.report(pos, "expected a ':' in ternary");
+            return Err(InternalError {});
+        }
         let if_false = comparison(arena, reporter, scanner)?;
         Ok(arena.alloc(Expr::Ternary {
             test: expr,
@@ -457,7 +466,7 @@ where
 fn comparison<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
@@ -468,7 +477,7 @@ where
 fn term<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
@@ -479,7 +488,7 @@ where
 fn factor<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
@@ -492,12 +501,15 @@ const UNARY_SYMBOLS: [Symbol; 2] = [Symbol::Minus, Symbol::Bang];
 fn unary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
-    if let Some(symbol) = consume_if_next_symbol_in(&UNARY_SYMBOLS, scanner) {
+    if let Some(symbol) = scanner.next_if_some(|next| match next {
+        TokenType::Symbol(symbol) if UNARY_SYMBOLS.contains(&symbol) => Some(symbol),
+        _ => None,
+    }) {
         let operator = symbol_to_unary_op(symbol);
         let right = unary(arena, reporter, scanner)?;
         Ok(arena.alloc(Expr::Unary {
@@ -512,86 +524,77 @@ where
 fn primary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
 ) -> Result<&'arena Expr<'arena>, InternalError>
 where
     Reporter: ErrorReporter,
 {
-    if let Some(result) = scanner.next() {
-        match result {
-            Ok(token) => {
-                let expr = match token.data {
-                    Data::Keyword(Keyword::True) => {
-                        arena.alloc(Expr::Literal(Literal::Boolean(true)))
-                    }
-                    Data::Keyword(Keyword::False) => {
-                        arena.alloc(Expr::Literal(Literal::Boolean(false)))
-                    }
-                    Data::Keyword(Keyword::Nil) => arena.alloc(Expr::Literal(Literal::Nil)),
-                    Data::String(string) => {
-                        let ast_string = arena.alloc_str(string);
-                        arena.alloc(Expr::Literal(Literal::String(ast_string)))
-                    }
-                    Data::Number(number) => {
-                        arena.alloc(Expr::Literal(Literal::Number(OrderedFloat(number))))
-                    }
-                    Data::Symbol(Symbol::LeftParen) => {
-                        let inner = expr(arena, reporter, scanner)?;
-                        let next_token = scanner.next();
-                        if let Some(result) = next_token {
-                            match result {
-                                Ok(token) => {
-                                    match token.data {
-                                        Data::Symbol(Symbol::RightParen) => {
-                                            // This is the happy path in that we have successfully matched the trailing group
-                                            arena.alloc(Expr::Group(inner))
-                                        }
-                                        _ => {
-                                            reporter.report(token.pos, "expected a ')'");
-                                            return Err(InternalError {});
-                                        }
-                                    }
+    match scanner.next() {
+        Ok(token) => {
+            let expr = match token.data {
+                TokenType::Keyword(Keyword::True) => {
+                    arena.alloc(Expr::Literal(Literal::Boolean(true)))
+                }
+                TokenType::Keyword(Keyword::False) => {
+                    arena.alloc(Expr::Literal(Literal::Boolean(false)))
+                }
+                TokenType::Keyword(Keyword::Nil) => arena.alloc(Expr::Literal(Literal::Nil)),
+                TokenType::String(string) => {
+                    let ast_string = arena.alloc_str(string);
+                    arena.alloc(Expr::Literal(Literal::String(ast_string)))
+                }
+                TokenType::Number(number) => {
+                    arena.alloc(Expr::Literal(Literal::Number(OrderedFloat(number))))
+                }
+                TokenType::Symbol(Symbol::LeftParen) => {
+                    let inner = expr(arena, reporter, scanner)?;
+                    match scanner.next() {
+                        Ok(token) => {
+                            match token.data {
+                                TokenType::Symbol(Symbol::RightParen) => {
+                                    // This is the happy path in that we have successfully matched the trailing group
+                                    arena.alloc(Expr::Group(inner))
                                 }
-                                Err(scan_err) => {
-                                    reporter.report(scan_err.pos, scan_err.error.message());
+                                _ => {
+                                    reporter.report(token.pos, "expected a ')'");
                                     return Err(InternalError {});
                                 }
                             }
-                        } else {
-                            unreachable!("scanned past eof");
+                        }
+                        Err(scan_err) => {
+                            reporter.report(scan_err.pos, scan_err.error.message());
+                            return Err(InternalError {});
                         }
                     }
-                    Data::Identifier(ident) => {
-                        arena.alloc(Expr::Identifier(arena.alloc_str(ident)))
-                    }
-                    // An unexpected binary symbol so lets try and parse the rhs before raising the error
-                    // - should be trapped by unary
-                    Data::Symbol(symbol)
-                        if BINARY_SYMBOLS.iter().find(|bin| **bin == symbol).is_some() =>
-                    {
-                        // Should this report something different?
-                        reporter.report(token.pos, "binary operator without a left-hand side");
-                        // result is unimportant, we are bailing anyway
-                        let _rhs = expr(arena, reporter, scanner);
-                        return Err(InternalError {});
-                    }
-                    _ => {
-                        reporter.report(
-                            token.pos,
-                            "unexpected token: expected true, false, nil, number, string or (",
-                        );
-                        return Err(InternalError {});
-                    }
-                };
-                Ok(expr)
-            }
-            Err(scan_err) => {
-                reporter.report(scan_err.pos, scan_err.error.message());
-                Err(InternalError {})
-            }
+                }
+                TokenType::Identifier(ident) => {
+                    arena.alloc(Expr::Identifier(arena.alloc_str(ident)))
+                }
+                // An unexpected binary symbol so lets try and parse the rhs before raising the error
+                // - should be trapped by unary
+                TokenType::Symbol(symbol)
+                    if BINARY_SYMBOLS.iter().find(|bin| **bin == symbol).is_some() =>
+                {
+                    // Should this report something different?
+                    reporter.report(token.pos, "binary operator without a left-hand side");
+                    // result is unimportant, we are bailing anyway
+                    let _rhs = expr(arena, reporter, scanner);
+                    return Err(InternalError {});
+                }
+                _ => {
+                    reporter.report(
+                        token.pos,
+                        "unexpected token: expected true, false, nil, number, string or (",
+                    );
+                    return Err(InternalError {});
+                }
+            };
+            Ok(expr)
         }
-    } else {
-        unreachable!("scanned past eof");
+        Err(scan_err) => {
+            reporter.report(scan_err.pos, scan_err.error.message());
+            Err(InternalError {})
+        }
     }
 }
 
@@ -600,7 +603,7 @@ where
 fn left_recursive_binary_op<'arena, 'src, Reporter, F>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'src>>,
+    scanner: &mut Scanner<'src>,
     symbols: &[Symbol],
     higher_precedence: F,
 ) -> Result<&'arena Expr<'arena>, InternalError>
@@ -609,11 +612,14 @@ where
     F: Fn(
         &'arena Bump,
         &mut Reporter,
-        &mut Peekable<Scanner<'src>>,
+        &mut Scanner<'src>,
     ) -> Result<&'arena Expr<'arena>, InternalError>,
 {
     let mut expr = higher_precedence(arena, reporter, scanner)?;
-    while let Some(symbol) = consume_if_next_symbol_in(symbols, scanner) {
+    while let Some(symbol) = scanner.next_if_some(|next| match next {
+        TokenType::Symbol(s) if symbols.contains(&s) => Some(s),
+        _ => None,
+    }) {
         let binary_op = symbol_to_binary_op(symbol);
         let right = higher_precedence(arena, reporter, scanner)?;
         expr = arena.alloc(Expr::Binary {
@@ -623,135 +629,6 @@ where
         })
     }
     Ok(expr)
-}
-
-fn consume_next_identifier<'code, Reporter>(
-    arena: &'code Bump,
-    reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner>,
-) -> Result<&'code str, InternalError>
-where
-    Reporter: ErrorReporter,
-{
-    let next = scanner.next().expect("scanned past eof");
-    match next {
-        Ok(Token {
-            data: Data::Identifier(identifier),
-            pos: _,
-        }) => Ok(arena.alloc_str(identifier)),
-        Ok(Token { data: _, pos }) => {
-            reporter.report(pos, "expected identifier");
-            Err(InternalError {})
-        }
-        Err(err) => {
-            reporter.report(err.pos, err.error.message());
-            Err(InternalError {})
-        }
-    }
-}
-
-// Consume and return the next token from the scanner if it is a symbol from the provided set
-fn consume_if_next_symbol_in(
-    set: &[Symbol],
-    scanner: &mut Peekable<Scanner<'_>>,
-) -> Option<Symbol> {
-    let result = if let Some(token) = scanner.peek() {
-        match token {
-            Ok(Token {
-                data: Data::Symbol(symbol),
-                pos: _,
-            }) if set.contains(symbol) => Some(*symbol),
-            _ => None,
-        }
-    } else {
-        unreachable!("scanned past eof")
-    };
-    // Consume the symbol that we peeked previously
-    if result.is_some() {
-        _ = scanner.next().unwrap();
-    }
-    result
-}
-
-// Consume and return the next token from the scanner if matches the given symbol
-fn consume_if_next_symbol_eq(required_next: Symbol, scanner: &mut Peekable<Scanner<'_>>) -> bool {
-    // TODO: Change to -> bool to align with consume_next_keyword_eq
-    let token = scanner.peek().expect("scanned past eof");
-    match token {
-        Ok(Token {
-            data: Data::Symbol(symbol),
-            pos: _,
-        }) if required_next == *symbol => {
-            _ = scanner.next().unwrap();
-            true
-        }
-        _ => false,
-    }
-}
-
-fn consume_if_next_identifier<'code>(scanner: &mut Peekable<Scanner<'code>>) -> Option<&'code str> {
-    let token = scanner.peek().expect("scanned past eof");
-    let result = match token {
-        Ok(Token {
-            data: Data::Identifier(ident),
-            pos: _,
-        }) => Some(*ident),
-        _ => None,
-    };
-    if result.is_some() {
-        let _ = scanner.next().unwrap();
-    }
-    result
-}
-
-// Consume the next token from the scanner. Error if it does not match the given input
-fn require_next_symbol<Reporter>(
-    required_next: Symbol,
-    err_msg: &str,
-    reporter: &mut Reporter,
-    scanner: &mut Peekable<Scanner<'_>>,
-) -> Result<(), InternalError>
-where
-    Reporter: ErrorReporter,
-{
-    // Don't consume it if it doesn't match so synchronize can
-    let next = scanner.peek().expect("scanned past eof");
-    match next {
-        Ok(token) => {
-            if token.data == required_next {
-                _ = scanner.next().unwrap();
-                Ok(())
-            } else {
-                reporter.report(token.pos, err_msg);
-                Err(InternalError {})
-            }
-        }
-        Err(scan_err) => {
-            reporter.report(scan_err.pos, scan_err.error.message());
-            Err(InternalError {})
-        }
-    }
-}
-
-fn consume_next_keyword_eq(required_next: Keyword, scanner: &mut Peekable<Scanner<'_>>) -> bool {
-    scanner
-        .next_if(|item| match item {
-            Ok(Token { data, pos: _ }) => *data == required_next,
-            _ => false,
-        })
-        // We only accept on the Ok branch
-        .is_some()
-}
-
-fn is_at_eof(scanner: &mut Peekable<Scanner>) -> bool {
-    if let Some(next) = scanner.peek() {
-        match next {
-            Ok(token) => token.data == Data::Eof,
-            Err(_) => false,
-        }
-    } else {
-        unreachable!("scanned past eof");
-    }
 }
 
 fn symbol_to_binary_op(symbol: Symbol) -> BinaryOp {
@@ -775,6 +652,16 @@ fn symbol_to_unary_op(symbol: Symbol) -> UnaryOp {
         Symbol::Bang => UnaryOp::Not,
         Symbol::Minus => UnaryOp::Negative,
         s => panic!("symbol was not a valid unary operator: {}", s),
+    }
+}
+
+/// Expect that the next token from scanner is the given symbol
+/// Returns the pos of the failed token (either due to error or mismatch) in Err
+fn expect_next_symbol(scanner: &mut Scanner, symbol: Symbol) -> Result<(), Pos> {
+    match scanner.next() {
+        Ok(token) if token.data == symbol => Ok(()),
+        Ok(token) => Err(token.pos),
+        Err(err) => Err(err.pos),
     }
 }
 
