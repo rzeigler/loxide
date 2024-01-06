@@ -136,12 +136,12 @@ impl<'a> Display for Literal<'a> {
 // Public error type that is returned from the API
 #[derive(Error, Debug)]
 #[error("parse error")]
-pub struct ParseError {}
+pub struct Error {}
 
 // For unwinding, we don't actually care that much about the internal cause which is reported through the reporter
 #[derive(Error, Debug)]
 #[error("internal parse error")]
-struct InternalError {}
+struct ParsePanic {}
 
 pub trait ErrorReporter {
     fn report(&mut self, pos: Pos, message: &str);
@@ -196,7 +196,7 @@ pub fn parse<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     mut scanner: Scanner<'src>,
-) -> Result<Program<'arena>, ParseError>
+) -> Result<Program<'arena>, Error>
 where
     Reporter: ErrorReporter,
 {
@@ -207,12 +207,12 @@ where
     if let Ok(program) = program(arena, &mut reporter, &mut scanner) {
         expect_eof(&mut reporter, &mut scanner);
         if reporter.errored {
-            Err(ParseError {})
+            Err(Error {})
         } else {
             Ok(program)
         }
     } else {
-        Err(ParseError {})
+        Err(Error {})
     }
 }
 
@@ -239,7 +239,7 @@ fn program<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<Program<'arena>, InternalError>
+) -> Result<Program<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -279,7 +279,7 @@ fn declaration<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, InternalError>
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -292,11 +292,11 @@ where
                 }) => arena.alloc_str(identifier), // Copy into the AST arena
                 Ok(token) => {
                     reporter.report(token.pos, "expected an identifier");
-                    return Err(InternalError {});
+                    return Err(ParsePanic {});
                 }
                 Err(err) => {
                     reporter.report(err.pos, "expected an identifier");
-                    return Err(InternalError {});
+                    return Err(ParsePanic {});
                 }
             }
         };
@@ -308,7 +308,7 @@ where
         };
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
             reporter.report(pos, "expected ';' after an expression");
-            return Err(InternalError {});
+            return Err(ParsePanic {});
         }
         Ok(arena.alloc(Stmt::VarDecl {
             identifier,
@@ -323,7 +323,7 @@ fn statement<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, InternalError>
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -338,14 +338,14 @@ fn print_stmt<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, InternalError>
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
     let expr = expr(arena, reporter, scanner)?;
     if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
         reporter.report(pos, "expected ';' after an expression");
-        return Err(InternalError {});
+        return Err(ParsePanic {});
     }
     Ok(arena.alloc(Stmt::Print(expr)))
 }
@@ -354,14 +354,14 @@ fn expr_stmt<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, InternalError>
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
     let expr = expr(arena, reporter, scanner)?;
     if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
         reporter.report(pos, "expected ';' after an expression");
-        return Err(InternalError {});
+        return Err(ParsePanic {});
     }
     Ok(arena.alloc(Stmt::Expr(expr)))
 }
@@ -370,7 +370,7 @@ fn expr<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -381,18 +381,29 @@ fn assignment<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    // let expr = equality(arena, reporter, scanner)
-    // if consume_if_next_symbol_eq(Symbol::Equal, scanner) {
-    //     // TODO: Consume this by loop rather than recursion
-
-    // } else {
-    //     expr
-    // }
-    equality(arena, reporter, scanner)
+    let expr = equality(arena, reporter, scanner)?;
+    if let Some(eq) = scanner.next_if(|token| *token == Symbol::Equal) {
+        let rhs = equality(arena, reporter, scanner)?;
+        match expr {
+            // A valid assignment target
+            Expr::Identifier(name) => Ok(arena.alloc(Expr::Assignment {
+                target: *name,
+                expr: rhs,
+            })),
+            // Not a valid assignment target
+            // Report the error to trigger top level error, but don't error out here so we continue parsing
+            _ => {
+                reporter.report(eq.pos, "Invalid assignment lhs");
+                Ok(expr)
+            }
+        }
+    } else {
+        Ok(expr)
+    }
 }
 
 // This encapsualtes the logic of the recursive parsing of levels of binary expression operators
@@ -430,7 +441,7 @@ fn equality<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -441,7 +452,7 @@ fn ternary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -452,7 +463,7 @@ where
         let if_true = comparison(arena, reporter, scanner)?;
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Colon) {
             reporter.report(pos, "expected a ':' in ternary");
-            return Err(InternalError {});
+            return Err(ParsePanic {});
         }
         let if_false = comparison(arena, reporter, scanner)?;
         Ok(arena.alloc(Expr::Ternary {
@@ -467,7 +478,7 @@ fn comparison<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -478,7 +489,7 @@ fn term<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -489,7 +500,7 @@ fn factor<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -502,7 +513,7 @@ fn unary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -525,7 +536,7 @@ fn primary<'arena, 'src, Reporter>(
     arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -557,13 +568,13 @@ where
                                 }
                                 _ => {
                                     reporter.report(token.pos, "expected a ')'");
-                                    return Err(InternalError {});
+                                    return Err(ParsePanic {});
                                 }
                             }
                         }
                         Err(scan_err) => {
                             reporter.report(scan_err.pos, scan_err.error.message());
-                            return Err(InternalError {});
+                            return Err(ParsePanic {});
                         }
                     }
                 }
@@ -579,21 +590,21 @@ where
                     reporter.report(token.pos, "binary operator without a left-hand side");
                     // result is unimportant, we are bailing anyway
                     let _rhs = expr(arena, reporter, scanner);
-                    return Err(InternalError {});
+                    return Err(ParsePanic {});
                 }
                 _ => {
                     reporter.report(
                         token.pos,
                         "unexpected token: expected true, false, nil, number, string or (",
                     );
-                    return Err(InternalError {});
+                    return Err(ParsePanic {});
                 }
             };
             Ok(expr)
         }
         Err(scan_err) => {
             reporter.report(scan_err.pos, scan_err.error.message());
-            Err(InternalError {})
+            Err(ParsePanic {})
         }
     }
 }
@@ -606,14 +617,14 @@ fn left_recursive_binary_op<'arena, 'src, Reporter, F>(
     scanner: &mut Scanner<'src>,
     symbols: &[Symbol],
     higher_precedence: F,
-) -> Result<&'arena Expr<'arena>, InternalError>
+) -> Result<&'arena Expr<'arena>, ParsePanic>
 where
     Reporter: ErrorReporter,
     F: Fn(
         &'arena Bump,
         &mut Reporter,
         &mut Scanner<'src>,
-    ) -> Result<&'arena Expr<'arena>, InternalError>,
+    ) -> Result<&'arena Expr<'arena>, ParsePanic>,
 {
     let mut expr = higher_precedence(arena, reporter, scanner)?;
     while let Some(symbol) = scanner.next_if_some(|next| match next {
