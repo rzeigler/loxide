@@ -23,6 +23,7 @@ pub enum Stmt<'a> {
     },
     Expr(&'a Expr<'a>),
     Print(&'a Expr<'a>),
+    Block(Vec<'a, &'a Stmt<'a>>),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -329,9 +330,31 @@ where
 {
     if scanner.next_if(|next| *next == Keyword::Print).is_some() {
         print_stmt(arena, reporter, scanner)
+    } else if scanner.next_if(|next| *next == Symbol::LeftBrace).is_some() {
+        block(arena, reporter, scanner)
     } else {
         expr_stmt(arena, reporter, scanner)
     }
+}
+
+fn block<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    let mut stmts: Vec<'arena, &'arena Stmt<'arena>> = Vec::new_in(arena);
+    while !scanner.is_at_eof() && !peek_matches(scanner, Symbol::RightBrace) {
+        let stmt = declaration(arena, reporter, scanner)?;
+        stmts.push(stmt);
+    }
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::RightBrace) {
+        reporter.report(pos, "Expected '}' after block");
+        return Err(ParsePanic {});
+    }
+    Ok(arena.alloc(Stmt::Block(stmts)))
 }
 
 fn print_stmt<'arena, 'src, Reporter>(
@@ -669,10 +692,22 @@ fn symbol_to_unary_op(symbol: Symbol) -> UnaryOp {
 /// Expect that the next token from scanner is the given symbol
 /// Returns the pos of the failed token (either due to error or mismatch) in Err
 fn expect_next_symbol(scanner: &mut Scanner, symbol: Symbol) -> Result<(), Pos> {
-    match scanner.next() {
+    let next = scanner.next();
+    match next {
         Ok(token) if token.data == symbol => Ok(()),
         Ok(token) => Err(token.pos),
         Err(err) => Err(err.pos),
+    }
+}
+
+// Helper to determine if a scanner result matches a specific input
+fn peek_matches<'code, A>(scanner: &mut Scanner<'code>, rhs: A) -> bool
+where
+    TokenType<'code>: PartialEq<A>,
+{
+    match scanner.peek() {
+        Ok(token) => token.data == rhs,
+        _ => false,
     }
 }
 

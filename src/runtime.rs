@@ -16,7 +16,7 @@ pub enum RuntimeError {
     DivideByZero,
     #[error("type error")]
     TypeError,
-    #[error("unbound variable")]
+    #[error("unbound variable: {0}")]
     UnboundVariable(String),
 }
 
@@ -114,51 +114,83 @@ impl From<Value> for bool {
 }
 
 pub struct Interpreter {
-    memory: HashMap<String, Value>,
+    global_memory: HashMap<String, Value>,
 }
 
 impl Interpreter {
     pub fn new() -> Interpreter {
         Interpreter {
-            memory: HashMap::<String, Value>::new(),
+            global_memory: HashMap::<String, Value>::new(),
         }
     }
 
     pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
+        let mut context_stack = Vec::<HashMap<String, Value>>::new();
         for stmt in expr.0 {
-            self.execute(stmt)?;
+            self.execute(&mut context_stack, stmt)?;
         }
         Ok(())
     }
 
-    fn execute(&mut self, stmt: &Stmt) -> Result<(), RuntimeError> {
+    fn execute(
+        &mut self,
+        context_stack: &mut Vec<HashMap<String, Value>>,
+        stmt: &Stmt,
+    ) -> Result<(), RuntimeError> {
         match stmt {
             Stmt::VarDecl { identifier, expr } => {
-                let v = self.eval(expr)?;
-                self.memory.insert(identifier.to_string(), v);
+                let v = self.eval(context_stack, expr)?;
+                if let Some(top) = context_stack.last_mut() {
+                    top.insert(identifier.to_string(), v);
+                } else {
+                    self.global_memory.insert(identifier.to_string(), v);
+                }
             }
-            Stmt::Print(expr) => println!("{}", self.eval(expr)?),
-            Stmt::Expr(expr) => _ = self.eval(expr)?,
+            Stmt::Print(expr) => println!("{}", self.eval(context_stack, expr)?),
+            Stmt::Expr(expr) => _ = self.eval(context_stack, expr)?,
+            Stmt::Block(stmts) => {
+                context_stack.push(HashMap::new());
+                let result = self.execute_block(context_stack, stmts);
+                context_stack.pop();
+                if result.is_err() {
+                    return result;
+                }
+            }
         }
         Ok(())
     }
 
-    fn eval(&mut self, expr: &Expr) -> Result<Value, RuntimeError> {
+    fn execute_block(
+        &mut self,
+        context_stack: &mut Vec<HashMap<String, Value>>,
+        stmts: &bumpalo::collections::Vec<&Stmt>,
+    ) -> Result<(), RuntimeError> {
+        for stmt in stmts {
+            self.execute(context_stack, stmt)?
+        }
+        Ok(())
+    }
+
+    fn eval(
+        &mut self,
+        context_stack: &mut Vec<HashMap<String, Value>>,
+        expr: &Expr,
+    ) -> Result<Value, RuntimeError> {
         match expr {
             Expr::Ternary {
                 test,
                 if_true,
                 if_false,
             } => {
-                if self.eval(test)?.into() {
-                    self.eval(if_true)
+                if self.eval(context_stack, test)?.into() {
+                    self.eval(context_stack, if_true)
                 } else {
-                    self.eval(if_false)
+                    self.eval(context_stack, if_false)
                 }
             }
             Expr::Binary { left, op, right } => {
-                let lhs = self.eval(left)?;
-                let rhs = self.eval(right)?;
+                let lhs = self.eval(context_stack, left)?;
+                let rhs = self.eval(context_stack, right)?;
                 match op {
                     BinaryOp::Equal => Ok(Value::Bool(eq(lhs, rhs))),
                     BinaryOp::NotEqual => Ok(Value::Bool(!eq(lhs, rhs))),
@@ -178,32 +210,61 @@ impl Interpreter {
                 }
             }
             Expr::Unary { op, expr } => {
-                let val = self.eval(expr)?;
+                let val = self.eval(context_stack, expr)?;
                 match op {
                     UnaryOp::Not => Ok(Value::Bool(!bool::from(val))),
                     UnaryOp::Negative => Value::Number(-1f64) * val,
                 }
             }
-            Expr::Group(expr) => self.eval(expr),
+            Expr::Group(expr) => self.eval(context_stack, expr),
             Expr::Literal(Literal::Number(f)) => Ok(Value::Number(**f)),
             Expr::Literal(Literal::String(s)) => Ok(Value::String(Rc::new(s.to_string()))),
             Expr::Literal(Literal::Boolean(b)) => Ok(Value::Bool(*b)),
             Expr::Literal(Literal::Nil) => Ok(Value::Nil),
-            Expr::Identifier(ident) => self
-                .memory
-                .get(*ident)
-                .cloned()
-                .ok_or(RuntimeError::UnboundVariable(ident.to_string())),
+            Expr::Identifier(ident) => self.lookup_value(context_stack, ident),
             Expr::Assignment { target, expr } => {
-                let value = self.eval(expr)?;
-                let lvalue = self
-                    .memory
-                    .get_mut(*target)
-                    .ok_or(RuntimeError::UnboundVariable(target.to_string()))?;
-                *lvalue = value;
-                Ok(lvalue.clone())
+                let value = self.eval(context_stack, expr)?;
+                self.assign_value(context_stack, target, value.clone())?;
+                Ok(value)
             }
         }
+    }
+
+    fn lookup_value(
+        &self,
+        context_stack: &mut Vec<HashMap<String, Value>>,
+        identifier: &str,
+    ) -> Result<Value, RuntimeError> {
+        for context in context_stack.iter().rev() {
+            if let Some(value) = context.get(identifier) {
+                return Ok(value.clone());
+            }
+        }
+        self.global_memory
+            .get(identifier)
+            .cloned()
+            .ok_or(RuntimeError::UnboundVariable(identifier.to_string()))
+    }
+
+    fn assign_value(
+        &mut self,
+        context_stack: &mut Vec<HashMap<String, Value>>,
+        target: &str,
+        value: Value,
+    ) -> Result<(), RuntimeError> {
+        for context in context_stack.iter_mut().rev() {
+            if let Some(lvalue) = context.get_mut(target) {
+                *lvalue = value;
+                return Ok(());
+            }
+        }
+
+        let lvalue = self
+            .global_memory
+            .get_mut(target)
+            .ok_or(RuntimeError::UnboundVariable(target.to_string()))?;
+        *lvalue = value;
+        Ok(())
     }
 }
 
