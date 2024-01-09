@@ -181,6 +181,28 @@ impl Interpreter {
                 }
                 Ok(Value::Nil)
             }
+            Stmt::If {
+                test,
+                if_true,
+                if_false,
+            } => {
+                let if_value = self.eval(context_stack, test)?;
+                match if_value {
+                    Value::Bool(true) => {
+                        self.execute(context_stack, &if_true)?;
+                        Ok(Value::Nil)
+                    }
+                    Value::Bool(false) => {
+                        if let Some(false_stmt) = if_false {
+                            self.execute(context_stack, false_stmt)?;
+                            Ok(Value::Nil)
+                        } else {
+                            Ok(Value::Nil)
+                        }
+                    }
+                    _ => Err(RuntimeError::TypeError),
+                }
+            }
         }
     }
 

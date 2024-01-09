@@ -1,5 +1,6 @@
 use std::fmt::Display;
 use std::io::Write;
+use std::string::ParseError;
 
 use crate::scanner::Keyword;
 use crate::scanner::Pos;
@@ -24,6 +25,11 @@ pub enum Stmt<'a> {
     Expr(&'a Expr<'a>),
     Print(&'a Expr<'a>),
     Block(Vec<'a, &'a Stmt<'a>>),
+    If {
+        test: &'a Expr<'a>,
+        if_true: &'a Stmt<'a>,
+        if_false: Option<&'a Stmt<'a>>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -328,7 +334,9 @@ fn statement<'arena, 'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    if scanner.next_if(|next| *next == Keyword::Print).is_some() {
+    if scanner.next_if(|next| *next == Keyword::If).is_some() {
+        if_stmt(arena, reporter, scanner)
+    } else if scanner.next_if(|next| *next == Keyword::Print).is_some() {
         print_stmt(arena, reporter, scanner)
     } else if scanner.next_if(|next| *next == Symbol::LeftBrace).is_some() {
         block(arena, reporter, scanner)
@@ -355,6 +363,36 @@ where
         return Err(ParsePanic {});
     }
     Ok(arena.alloc(Stmt::Block(stmts)))
+}
+
+fn if_stmt<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftParen) {
+        reporter.report(pos, "expected '(' after if");
+        return Err(ParsePanic {});
+    }
+    let test_expr = expr(arena, reporter, scanner)?;
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
+        reporter.report(pos, "expected ')' after if condition");
+        return Err(ParsePanic {});
+    }
+    let then_branch = statement(arena, reporter, scanner)?;
+    let else_branch = if scanner.next_if(|next| *next == Keyword::Else).is_some() {
+        Some(statement(arena, reporter, scanner)?)
+    } else {
+        None
+    };
+    Ok(arena.alloc(Stmt::If {
+        test: test_expr,
+        if_true: then_branch,
+        if_false: else_branch,
+    }))
 }
 
 fn print_stmt<'arena, 'src, Reporter>(
