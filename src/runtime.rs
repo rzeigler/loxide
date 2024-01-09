@@ -1,6 +1,5 @@
 use std::{
     collections::HashMap,
-    convert::From,
     fmt::Display,
     ops::{Add, Div, Mul, Sub},
     rc::Rc,
@@ -28,6 +27,16 @@ pub enum Value {
     Number(f64),
     Bool(bool),
     Nil,
+}
+
+impl Value {
+    fn to_bool(&self) -> bool {
+        match self {
+            Value::Bool(b) => *b,
+            Value::Nil => false,
+            _ => true,
+        }
+    }
 }
 
 impl Display for Value {
@@ -101,16 +110,6 @@ impl Sub for Value {
         match (self, rhs) {
             (Value::Number(l), Value::Number(r)) => Ok(Value::Number(l - r)),
             _ => Ok(NAN),
-        }
-    }
-}
-
-impl From<Value> for bool {
-    fn from(value: Value) -> Self {
-        match value {
-            Value::Bool(b) => b,
-            Value::Nil => false,
-            _ => true,
         }
     }
 }
@@ -228,7 +227,7 @@ impl Interpreter {
                 if_true,
                 if_false,
             } => {
-                if self.eval(context_stack, test)?.into() {
+                if self.eval(context_stack, test)?.to_bool() {
                     self.eval(context_stack, if_true)
                 } else {
                     self.eval(context_stack, if_false)
@@ -258,7 +257,7 @@ impl Interpreter {
             Expr::Unary { op, expr } => {
                 let val = self.eval(context_stack, expr)?;
                 match op {
-                    UnaryOp::Not => Ok(Value::Bool(!bool::from(val))),
+                    UnaryOp::Not => Ok(Value::Bool(!val.to_bool())),
                     UnaryOp::Negative => Value::Number(-1f64) * val,
                 }
             }
@@ -273,15 +272,17 @@ impl Interpreter {
                 self.assign_value(context_stack, target, value.clone())?;
                 Ok(value)
             }
+            // We do this to support coallescing like behavior such as javascript has i.e. false || "a" should eval to "a"
             Expr::Logical {
                 left,
                 op: LogicalOp::And,
                 right,
             } => {
-                if self.eval(context_stack, left)?.into() {
-                    Ok(Value::Bool(self.eval(context_stack, right)?.into()))
+                let left_val = self.eval(context_stack, left)?;
+                if left_val.to_bool() {
+                    self.eval(context_stack, right)
                 } else {
-                    Ok(Value::Bool(false))
+                    Ok(left_val)
                 }
             }
             Expr::Logical {
@@ -289,10 +290,11 @@ impl Interpreter {
                 op: LogicalOp::Or,
                 right,
             } => {
-                if self.eval(context_stack, left)?.into() {
-                    Ok(Value::Bool(true))
+                let left_val = self.eval(context_stack, left)?;
+                if left_val.to_bool() {
+                    Ok(left_val)
                 } else {
-                    Ok(Value::Bool(self.eval(context_stack, right)?.into()))
+                    self.eval(context_stack, right)
                 }
             }
         }

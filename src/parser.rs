@@ -1,6 +1,5 @@
 use std::fmt::Display;
 use std::io::Write;
-use std::string::ParseError;
 
 use crate::scanner::Keyword;
 use crate::scanner::Pos;
