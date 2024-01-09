@@ -55,6 +55,11 @@ pub enum Expr<'a> {
         target: &'a str,
         expr: &'a Expr<'a>,
     },
+    Logical {
+        left: &'a Expr<'a>,
+        op: LogicalOp,
+        right: &'a Expr<'a>,
+    },
 }
 
 impl<'a> Display for Expr<'a> {
@@ -71,6 +76,7 @@ impl<'a> Display for Expr<'a> {
             } => write!(f, "(? {} : {} {})", test, if_true, if_false),
             Expr::Identifier(id) => write!(f, "(ident {})", id),
             Expr::Assignment { target, expr } => write!(f, "(= {} {})", target, expr),
+            Expr::Logical { left, op, right } => write!(f, "({} {} {})", op, left, right),
         }
     }
 }
@@ -117,6 +123,21 @@ impl Display for UnaryOp {
         match self {
             UnaryOp::Not => f.write_str("!"),
             UnaryOp::Negative => f.write_str("-"),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum LogicalOp {
+    And,
+    Or,
+}
+
+impl Display for LogicalOp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LogicalOp::And => f.write_str("and"),
+            LogicalOp::Or => f.write_str("or"),
         }
     }
 }
@@ -446,9 +467,9 @@ fn assignment<'arena, 'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    let expr = equality(arena, reporter, scanner)?;
+    let expr = logical_or(arena, reporter, scanner)?;
     if let Some(eq) = scanner.next_if(|token| *token == Symbol::Equal) {
-        let rhs = equality(arena, reporter, scanner)?;
+        let rhs = logical_or(arena, reporter, scanner)?;
         match expr {
             // A valid assignment target
             Expr::Identifier(name) => Ok(arena.alloc(Expr::Assignment {
@@ -466,7 +487,6 @@ where
         Ok(expr)
     }
 }
-
 // This encapsualtes the logic of the recursive parsing of levels of binary expression operators
 // We define a set of matching symbols (and we have the symbol -> binary op) as well as a high precendence parser
 // Observe
@@ -497,6 +517,28 @@ const BINARY_SYMBOLS: [Symbol; 10] = [
     Symbol::Star,
     Symbol::Slash,
 ];
+
+fn logical_or<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Expr<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    left_recursive_logical_op(arena, reporter, scanner, Keyword::Or, logical_and)
+}
+
+fn logical_and<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Expr<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    left_recursive_logical_op(arena, reporter, scanner, Keyword::And, equality)
+}
 
 fn equality<'arena, 'src, Reporter>(
     arena: &'arena Bump,
@@ -703,6 +745,37 @@ where
     Ok(expr)
 }
 
+fn left_recursive_logical_op<'arena, 'src, Reporter, F>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+    keyword: Keyword,
+    higher_precedence: F,
+) -> Result<&'arena Expr<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+    F: Fn(
+        &'arena Bump,
+        &mut Reporter,
+        &mut Scanner<'src>,
+    ) -> Result<&'arena Expr<'arena>, ParsePanic>,
+{
+    let mut expr: &Expr<'_> = higher_precedence(arena, reporter, scanner)?;
+    while let Some(kw) = scanner.next_if_some(|next| match next {
+        TokenType::Keyword(kw) if keyword == kw => Some(kw),
+        _ => None,
+    }) {
+        let logical_op = keyword_to_logical_op(kw);
+        let right = higher_precedence(arena, reporter, scanner)?;
+        expr = arena.alloc(Expr::Logical {
+            left: expr,
+            op: logical_op,
+            right,
+        })
+    }
+    Ok(expr)
+}
+
 fn symbol_to_binary_op(symbol: Symbol) -> BinaryOp {
     match symbol {
         Symbol::EqualEqual => BinaryOp::Equal,
@@ -716,6 +789,14 @@ fn symbol_to_binary_op(symbol: Symbol) -> BinaryOp {
         Symbol::Star => BinaryOp::Multiply,
         Symbol::Slash => BinaryOp::Divide,
         s => panic!("symbol was not a valid binary operator: {}", s),
+    }
+}
+
+fn keyword_to_logical_op(kw: Keyword) -> LogicalOp {
+    match kw {
+        Keyword::And => LogicalOp::And,
+        Keyword::Or => LogicalOp::Or,
+        kw => panic!("keyword was not a valid logical operator: {}", kw),
     }
 }
 

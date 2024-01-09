@@ -8,7 +8,7 @@ use std::{
 
 use thiserror::Error;
 
-use crate::parser::{BinaryOp, Expr, Literal, Program, Stmt, UnaryOp};
+use crate::parser::{BinaryOp, Expr, Literal, LogicalOp, Program, Stmt, UnaryOp};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -272,6 +272,28 @@ impl Interpreter {
                 let value = self.eval(context_stack, expr)?;
                 self.assign_value(context_stack, target, value.clone())?;
                 Ok(value)
+            }
+            Expr::Logical {
+                left,
+                op: LogicalOp::And,
+                right,
+            } => {
+                if self.eval(context_stack, left)?.into() {
+                    Ok(Value::Bool(self.eval(context_stack, right)?.into()))
+                } else {
+                    Ok(Value::Bool(false))
+                }
+            }
+            Expr::Logical {
+                left,
+                op: LogicalOp::Or,
+                right,
+            } => {
+                if self.eval(context_stack, left)?.into() {
+                    Ok(Value::Bool(true))
+                } else {
+                    Ok(Value::Bool(self.eval(context_stack, right)?.into()))
+                }
             }
         }
     }
