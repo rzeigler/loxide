@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use bumpalo::Bump;
 use parser::parse;
 use runtime::Interpreter;
+use runtime::Value;
 use scanner::Scanner;
 
 use crate::parser::WriteErrorReporter;
@@ -32,7 +33,7 @@ fn main() -> Result<()> {
         let mut script = String::new();
         file.read_to_string(&mut script)
             .context("Unable to read script file")?;
-        run(&mut Interpreter::new(), &script);
+        run(&mut Interpreter::new(), &script, false);
     } else {
         run_prompt()?;
     }
@@ -54,7 +55,7 @@ fn run_prompt() -> Result<()> {
         if n == 0 {
             break;
         }
-        run(&mut interpreter, &line);
+        run(&mut interpreter, &line, true);
         // Don't keep appending code until the next time
         line.clear();
         {
@@ -66,22 +67,27 @@ fn run_prompt() -> Result<()> {
     Ok(())
 }
 
-fn run(interpreter: &mut Interpreter, code: &str) {
+fn run(interpreter: &mut Interpreter, code: &str, in_repl: bool) {
     let bump = Bump::new();
     let mut stderr = std::io::stderr().lock();
     let mut reporter = WriteErrorReporter::new(&mut stderr);
-    match parse(&bump, &mut reporter, Scanner::new(code))
-        .with_context(|| "invalid syntax")
-        .and_then(|prg| interpreter.interpret(prg).with_context(|| "runtime error"))
-    {
-        Ok(_) => {}
-        Err(error) => {
-            let mut output = String::new();
-            for cause in error.chain() {
-                output.push_str(&cause.to_string());
-                output.push(' ');
+
+    match parse(&bump, &mut reporter, Scanner::new(code)) {
+        Ok(program) => {
+            if in_repl && program.0.len() == 1 {
+                match interpreter.interpret_one(program.0[0]) {
+                    Ok(Value::Nil) => {}
+                    Ok(v) => println!("{}", v),
+                    Err(e) => eprintln!("{}", e),
+                }
+            } else {
+                if let Err(e) = interpreter.interpret(program) {
+                    eprintln!("{}", e);
+                }
             }
-            eprintln!("{}", output)
         }
-    }
+        Err(error) => {
+            eprintln!("{}", error)
+        }
+    };
 }

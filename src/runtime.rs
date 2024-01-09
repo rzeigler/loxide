@@ -132,32 +132,41 @@ impl Interpreter {
         Ok(())
     }
 
+    pub fn interpret_one(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
+        let mut context_stack = Vec::<HashMap<String, Value>>::new();
+        self.execute(&mut context_stack, stmt)
+    }
+
     fn execute(
         &mut self,
         context_stack: &mut Vec<HashMap<String, Value>>,
         stmt: &Stmt,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<Value, RuntimeError> {
         match stmt {
             Stmt::VarDecl { identifier, expr } => {
                 let v = self.eval(context_stack, expr)?;
                 if let Some(top) = context_stack.last_mut() {
-                    top.insert(identifier.to_string(), v);
+                    top.insert(identifier.to_string(), v.clone());
                 } else {
-                    self.global_memory.insert(identifier.to_string(), v);
+                    self.global_memory.insert(identifier.to_string(), v.clone());
                 }
+                Ok(v)
             }
-            Stmt::Print(expr) => println!("{}", self.eval(context_stack, expr)?),
-            Stmt::Expr(expr) => _ = self.eval(context_stack, expr)?,
+            Stmt::Print(expr) => {
+                println!("{}", self.eval(context_stack, expr)?);
+                Ok(Value::Nil)
+            }
+            Stmt::Expr(expr) => self.eval(context_stack, expr),
             Stmt::Block(stmts) => {
                 context_stack.push(HashMap::new());
                 let result = self.execute_block(context_stack, stmts);
                 context_stack.pop();
-                if result.is_err() {
-                    return result;
+                if let Err(e) = result {
+                    return Err(e);
                 }
+                Ok(Value::Nil)
             }
         }
-        Ok(())
     }
 
     fn execute_block(
@@ -166,7 +175,7 @@ impl Interpreter {
         stmts: &bumpalo::collections::Vec<&Stmt>,
     ) -> Result<(), RuntimeError> {
         for stmt in stmts {
-            self.execute(context_stack, stmt)?
+            self.execute(context_stack, stmt)?;
         }
         Ok(())
     }
