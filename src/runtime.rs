@@ -16,8 +16,10 @@ pub enum RuntimeError {
     DivideByZero,
     #[error("type error")]
     TypeError,
-    #[error("unbound variable: {0}")]
+    #[error("undefined variable: {0}")]
     UnboundVariable(String),
+    #[error("uninitialized variable: {0}")]
+    UninitializedVariable(String),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -113,19 +115,22 @@ impl From<Value> for bool {
     }
 }
 
+type Environment = HashMap<String, Option<Value>>;
+
 pub struct Interpreter {
-    global_memory: HashMap<String, Value>,
+    // None indicates that the variable is defined by not yet initialized
+    global_memory: Environment,
 }
 
 impl Interpreter {
     pub fn new() -> Interpreter {
         Interpreter {
-            global_memory: HashMap::<String, Value>::new(),
+            global_memory: Environment::new(),
         }
     }
 
     pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
-        let mut context_stack = Vec::<HashMap<String, Value>>::new();
+        let mut context_stack = Vec::<Environment>::new();
         for stmt in expr.0 {
             self.execute(&mut context_stack, stmt)?;
         }
@@ -133,24 +138,34 @@ impl Interpreter {
     }
 
     pub fn interpret_one(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
-        let mut context_stack = Vec::<HashMap<String, Value>>::new();
+        let mut context_stack = Vec::<Environment>::new();
         self.execute(&mut context_stack, stmt)
     }
 
     fn execute(
         &mut self,
-        context_stack: &mut Vec<HashMap<String, Value>>,
+        context_stack: &mut Vec<Environment>,
         stmt: &Stmt,
     ) -> Result<Value, RuntimeError> {
         match stmt {
-            Stmt::VarDecl { identifier, expr } => {
-                let v = self.eval(context_stack, expr)?;
-                if let Some(top) = context_stack.last_mut() {
-                    top.insert(identifier.to_string(), v.clone());
+            Stmt::VarDecl { identifier, init } => {
+                if let Some(expr) = init {
+                    let v = self.eval(context_stack, expr)?;
+                    if let Some(top) = context_stack.last_mut() {
+                        top.insert(identifier.to_string(), Some(v.clone()));
+                    } else {
+                        self.global_memory
+                            .insert(identifier.to_string(), Some(v.clone()));
+                    }
+                    Ok(v)
                 } else {
-                    self.global_memory.insert(identifier.to_string(), v.clone());
+                    if let Some(top) = context_stack.last_mut() {
+                        top.insert(identifier.to_string(), None);
+                    } else {
+                        self.global_memory.insert(identifier.to_string(), None);
+                    }
+                    Ok(Value::Nil)
                 }
-                Ok(v)
             }
             Stmt::Print(expr) => {
                 println!("{}", self.eval(context_stack, expr)?);
@@ -171,7 +186,7 @@ impl Interpreter {
 
     fn execute_block(
         &mut self,
-        context_stack: &mut Vec<HashMap<String, Value>>,
+        context_stack: &mut Vec<Environment>,
         stmts: &bumpalo::collections::Vec<&Stmt>,
     ) -> Result<(), RuntimeError> {
         for stmt in stmts {
@@ -182,7 +197,7 @@ impl Interpreter {
 
     fn eval(
         &mut self,
-        context_stack: &mut Vec<HashMap<String, Value>>,
+        context_stack: &mut Vec<Environment>,
         expr: &Expr,
     ) -> Result<Value, RuntimeError> {
         match expr {
@@ -241,29 +256,35 @@ impl Interpreter {
 
     fn lookup_value(
         &self,
-        context_stack: &mut Vec<HashMap<String, Value>>,
+        context_stack: &mut Vec<Environment>,
         identifier: &str,
     ) -> Result<Value, RuntimeError> {
         for context in context_stack.iter().rev() {
             if let Some(value) = context.get(identifier) {
-                return Ok(value.clone());
+                let v = value
+                    .clone()
+                    .ok_or(RuntimeError::UninitializedVariable(identifier.to_string()))?;
+                return Ok(v);
             }
         }
         self.global_memory
             .get(identifier)
             .cloned()
             .ok_or(RuntimeError::UnboundVariable(identifier.to_string()))
+            .and_then(|inner| {
+                inner.ok_or(RuntimeError::UninitializedVariable(identifier.to_string()))
+            })
     }
 
     fn assign_value(
         &mut self,
-        context_stack: &mut Vec<HashMap<String, Value>>,
+        context_stack: &mut Vec<Environment>,
         target: &str,
         value: Value,
     ) -> Result<(), RuntimeError> {
         for context in context_stack.iter_mut().rev() {
             if let Some(lvalue) = context.get_mut(target) {
-                *lvalue = value;
+                *lvalue = Some(value);
                 return Ok(());
             }
         }
@@ -272,7 +293,7 @@ impl Interpreter {
             .global_memory
             .get_mut(target)
             .ok_or(RuntimeError::UnboundVariable(target.to_string()))?;
-        *lvalue = value;
+        *lvalue = Some(value);
         Ok(())
     }
 }

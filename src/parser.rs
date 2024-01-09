@@ -19,7 +19,7 @@ pub struct Program<'a>(pub Vec<'a, &'a Stmt<'a>>);
 pub enum Stmt<'a> {
     VarDecl {
         identifier: &'a str,
-        expr: &'a Expr<'a>,
+        init: Option<&'a Expr<'a>>,
     },
     Expr(&'a Expr<'a>),
     Print(&'a Expr<'a>),
@@ -302,10 +302,10 @@ where
             }
         };
         let initializer = if scanner.next_if(|next| *next == Symbol::Equal).is_some() {
-            expr(arena, reporter, scanner)?
+            Some(expr(arena, reporter, scanner)?)
         } else {
             // Generate a synthetic initializer as the constant null
-            arena.alloc(Expr::Literal(Literal::Nil))
+            None
         };
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
             reporter.report(pos, "expected ';' after an expression");
@@ -313,7 +313,7 @@ where
         }
         Ok(arena.alloc(Stmt::VarDecl {
             identifier,
-            expr: initializer,
+            init: initializer,
         }))
     } else {
         statement(arena, reporter, scanner)
