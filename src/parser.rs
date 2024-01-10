@@ -8,6 +8,7 @@ use crate::scanner::Symbol;
 use crate::scanner::Token;
 use crate::scanner::TokenType;
 use bumpalo::collections::Vec;
+use bumpalo::vec;
 use bumpalo::Bump;
 use ordered_float::OrderedFloat;
 use thiserror::Error;
@@ -29,10 +30,11 @@ pub enum Stmt<'a> {
         then: &'a Stmt<'a>,
         or_else: Option<&'a Stmt<'a>>,
     },
-    While {
+    Loop {
         expr: &'a Expr<'a>,
         body: &'a Stmt<'a>,
     },
+    Break,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -362,8 +364,16 @@ where
         if_stmt(arena, reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::While).is_some() {
         while_stmt(arena, reporter, scanner)
+    } else if scanner.next_if(|next| *next == Keyword::For).is_some() {
+        for_stmt(arena, reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::Print).is_some() {
         print_stmt(arena, reporter, scanner)
+    } else if scanner.next_if(|next| *next == Keyword::Break).is_some() {
+        if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
+            reporter.report(pos, "expected ';' after break");
+            return Err(ParsePanic {});
+        }
+        Ok(arena.alloc(Stmt::Break))
     } else if scanner.next_if(|next| *next == Symbol::LeftBrace).is_some() {
         block(arena, reporter, scanner)
     } else {
@@ -439,7 +449,74 @@ where
         return Err(ParsePanic {});
     }
     let body = statement(arena, reporter, scanner)?;
-    Ok(arena.alloc(Stmt::While { expr, body }))
+    Ok(arena.alloc(Stmt::Loop { expr, body }))
+}
+
+fn for_stmt<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftParen) {
+        reporter.report(pos, "expected '(' after for");
+        return Err(ParsePanic {});
+    }
+    let initializer = if scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
+        None
+    } else if scanner
+        .clone()
+        .next_if(|next| *next == Keyword::Var)
+        .is_some()
+    {
+        Some(declaration(arena, reporter, scanner)?)
+    } else {
+        Some(expr_stmt(arena, reporter, scanner)?)
+    };
+
+    let condition = if scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
+        arena.alloc(Expr::Literal(Literal::Boolean(true)))
+    } else {
+        let cond = expr(arena, reporter, scanner)?;
+        if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
+            reporter.report(pos, "expected ';' after loop condition");
+            return Err(ParsePanic {});
+        }
+        cond
+    };
+
+    let incr = if scanner
+        .next_if(|next| *next == Symbol::RightParen)
+        .is_some()
+    {
+        None
+    } else {
+        let expr = expr(arena, reporter, scanner)?;
+        if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
+            reporter.report(pos, "expected )' after for clauses");
+            return Err(ParsePanic {});
+        }
+        Some(arena.alloc(Stmt::Expr(expr)))
+    };
+
+    let mut body = statement(arena, reporter, scanner)?;
+    // TODO: Avoid double nesting the blocks
+    if let Some(incr) = incr {
+        body = arena.alloc(Stmt::Block(vec![in &arena; body, incr]));
+    }
+
+    let for_loop = arena.alloc(Stmt::Loop {
+        expr: condition,
+        body: body,
+    });
+
+    if let Some(init) = initializer {
+        Ok(arena.alloc(Stmt::Block(vec![in &arena; init, for_loop])))
+    } else {
+        Ok(for_loop)
+    }
 }
 
 fn print_stmt<'arena, 'src, Reporter>(

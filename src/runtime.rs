@@ -19,6 +19,13 @@ pub enum RuntimeError {
     UnboundVariable(String),
     #[error("uninitialized variable: {0}")]
     UninitializedVariable(String),
+    #[error("break outside of a loop")]
+    InvalidBreak,
+}
+
+pub enum UnwindCause {
+    Error(RuntimeError),
+    Break,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +61,7 @@ const NAN: Value = Value::Number(f64::NAN);
 
 // Starting here are convenience implementations to make the interpret loop easier
 impl Add for Value {
-    type Output = Result<Value, RuntimeError>;
+    type Output = Result<Value, UnwindCause>;
 
     fn add(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
@@ -75,7 +82,7 @@ impl Add for Value {
 }
 
 impl Mul for Value {
-    type Output = Result<Value, RuntimeError>;
+    type Output = Result<Value, UnwindCause>;
 
     fn mul(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
@@ -87,13 +94,13 @@ impl Mul for Value {
 }
 
 impl Div for Value {
-    type Output = Result<Value, RuntimeError>;
+    type Output = Result<Value, UnwindCause>;
 
     fn div(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
             (Value::Number(l), Value::Number(r)) => {
                 if r == 0f64 {
-                    Err(RuntimeError::DivideByZero)
+                    Err(UnwindCause::Error(RuntimeError::DivideByZero))
                 } else {
                     Ok(Value::Number(l / r))
                 }
@@ -104,7 +111,7 @@ impl Div for Value {
 }
 
 impl Sub for Value {
-    type Output = Result<Value, RuntimeError>;
+    type Output = Result<Value, UnwindCause>;
 
     fn sub(self, rhs: Self) -> Self::Output {
         match (self, rhs) {
@@ -131,7 +138,11 @@ impl Interpreter {
     pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
         let mut context_stack = Vec::<Environment>::new();
         for stmt in expr.0 {
-            self.execute(&mut context_stack, stmt)?;
+            self.execute(&mut context_stack, stmt)
+                .map_err(|err| match err {
+                    UnwindCause::Break => RuntimeError::InvalidBreak,
+                    UnwindCause::Error(err) => err,
+                })?;
         }
         Ok(())
     }
@@ -139,13 +150,17 @@ impl Interpreter {
     pub fn interpret_one(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
         let mut context_stack = Vec::<Environment>::new();
         self.execute(&mut context_stack, stmt)
+            .map_err(|err| match err {
+                UnwindCause::Break => RuntimeError::InvalidBreak,
+                UnwindCause::Error(err) => err,
+            })
     }
 
     fn execute(
         &mut self,
         context_stack: &mut Vec<Environment>,
         stmt: &Stmt,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<Value, UnwindCause> {
         match stmt {
             Stmt::VarDecl { identifier, init } => {
                 if let Some(expr) = init {
@@ -199,15 +214,22 @@ impl Interpreter {
                             Ok(Value::Nil)
                         }
                     }
-                    _ => Err(RuntimeError::TypeError),
+                    _ => Err(UnwindCause::Error(RuntimeError::TypeError)),
                 }
             }
-            Stmt::While { expr, body } => {
+            Stmt::Loop { expr, body } => {
                 while self.eval(context_stack, expr)?.to_bool() {
-                    self.execute(context_stack, &body)?;
+                    match self.execute(context_stack, &body) {
+                        Err(UnwindCause::Break) => {
+                            break;
+                        }
+                        Err(e) => return Err(e),
+                        _ => {}
+                    }
                 }
                 Ok(Value::Nil)
             }
+            Stmt::Break => Err(UnwindCause::Break),
         }
     }
 
@@ -215,7 +237,7 @@ impl Interpreter {
         &mut self,
         context_stack: &mut Vec<Environment>,
         stmts: &bumpalo::collections::Vec<&Stmt>,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), UnwindCause> {
         for stmt in stmts {
             self.execute(context_stack, stmt)?;
         }
@@ -226,7 +248,7 @@ impl Interpreter {
         &mut self,
         context_stack: &mut Vec<Environment>,
         expr: &Expr,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<Value, UnwindCause> {
         match expr {
             Expr::Ternary {
                 test,
@@ -310,21 +332,25 @@ impl Interpreter {
         &self,
         context_stack: &mut Vec<Environment>,
         identifier: &str,
-    ) -> Result<Value, RuntimeError> {
+    ) -> Result<Value, UnwindCause> {
         for context in context_stack.iter().rev() {
             if let Some(value) = context.get(identifier) {
-                let v = value
-                    .clone()
-                    .ok_or(RuntimeError::UninitializedVariable(identifier.to_string()))?;
+                let v = value.clone().ok_or(UnwindCause::Error(
+                    RuntimeError::UninitializedVariable(identifier.to_string()),
+                ))?;
                 return Ok(v);
             }
         }
         self.global_memory
             .get(identifier)
             .cloned()
-            .ok_or(RuntimeError::UnboundVariable(identifier.to_string()))
+            .ok_or(UnwindCause::Error(RuntimeError::UnboundVariable(
+                identifier.to_string(),
+            )))
             .and_then(|inner| {
-                inner.ok_or(RuntimeError::UninitializedVariable(identifier.to_string()))
+                inner.ok_or(UnwindCause::Error(RuntimeError::UninitializedVariable(
+                    identifier.to_string(),
+                )))
             })
     }
 
@@ -333,7 +359,7 @@ impl Interpreter {
         context_stack: &mut Vec<Environment>,
         target: &str,
         value: Value,
-    ) -> Result<(), RuntimeError> {
+    ) -> Result<(), UnwindCause> {
         for context in context_stack.iter_mut().rev() {
             if let Some(lvalue) = context.get_mut(target) {
                 *lvalue = Some(value);
@@ -344,7 +370,9 @@ impl Interpreter {
         let lvalue = self
             .global_memory
             .get_mut(target)
-            .ok_or(RuntimeError::UnboundVariable(target.to_string()))?;
+            .ok_or(UnwindCause::Error(RuntimeError::UnboundVariable(
+                target.to_string(),
+            )))?;
         *lvalue = Some(value);
         Ok(())
     }

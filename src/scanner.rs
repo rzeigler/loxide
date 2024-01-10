@@ -126,9 +126,10 @@ pub enum Keyword {
     True,
     Var,
     While,
+    Break,
 }
 
-const KEYWORD_LITERAL_TO_SYMBOL: [(&'static str, Keyword); 16] = [
+const KEYWORD_LITERAL_TO_SYMBOL: [(&'static str, Keyword); 17] = [
     ("and", Keyword::And),
     ("class", Keyword::Class),
     ("else", Keyword::Else),
@@ -145,6 +146,7 @@ const KEYWORD_LITERAL_TO_SYMBOL: [(&'static str, Keyword); 16] = [
     ("true", Keyword::True),
     ("var", Keyword::Var),
     ("while", Keyword::While),
+    ("break", Keyword::Break),
 ];
 
 impl Display for Keyword {
