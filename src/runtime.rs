@@ -181,9 +181,9 @@ impl Interpreter {
                 Ok(Value::Nil)
             }
             Stmt::If {
-                test,
-                if_true,
-                if_false,
+                expr: test,
+                then: if_true,
+                or_else: if_false,
             } => {
                 let if_value = self.eval(context_stack, test)?;
                 match if_value {
@@ -201,6 +201,12 @@ impl Interpreter {
                     }
                     _ => Err(RuntimeError::TypeError),
                 }
+            }
+            Stmt::While { expr, body } => {
+                while self.eval(context_stack, expr)?.to_bool() {
+                    self.execute(context_stack, &body)?;
+                }
+                Ok(Value::Nil)
             }
         }
     }

@@ -25,9 +25,13 @@ pub enum Stmt<'a> {
     Print(&'a Expr<'a>),
     Block(Vec<'a, &'a Stmt<'a>>),
     If {
-        test: &'a Expr<'a>,
-        if_true: &'a Stmt<'a>,
-        if_false: Option<&'a Stmt<'a>>,
+        expr: &'a Expr<'a>,
+        then: &'a Stmt<'a>,
+        or_else: Option<&'a Stmt<'a>>,
+    },
+    While {
+        expr: &'a Expr<'a>,
+        body: &'a Stmt<'a>,
     },
 }
 
@@ -356,6 +360,8 @@ where
 {
     if scanner.next_if(|next| *next == Keyword::If).is_some() {
         if_stmt(arena, reporter, scanner)
+    } else if scanner.next_if(|next| *next == Keyword::While).is_some() {
+        while_stmt(arena, reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::Print).is_some() {
         print_stmt(arena, reporter, scanner)
     } else if scanner.next_if(|next| *next == Symbol::LeftBrace).is_some() {
@@ -409,10 +415,31 @@ where
         None
     };
     Ok(arena.alloc(Stmt::If {
-        test: test_expr,
-        if_true: then_branch,
-        if_false: else_branch,
+        expr: test_expr,
+        then: then_branch,
+        or_else: else_branch,
     }))
+}
+
+fn while_stmt<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftParen) {
+        reporter.report(pos, "expected '(' after when");
+        return Err(ParsePanic {});
+    }
+    let expr = expr(arena, reporter, scanner)?;
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
+        reporter.report(pos, "expected ')' after when condition");
+        return Err(ParsePanic {});
+    }
+    let body = statement(arena, reporter, scanner)?;
+    Ok(arena.alloc(Stmt::While { expr, body }))
 }
 
 fn print_stmt<'arena, 'src, Reporter>(
