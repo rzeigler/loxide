@@ -1,8 +1,9 @@
 use std::{
     collections::HashMap,
-    fmt::Display,
+    fmt::{Debug, Display},
     ops::{Add, Div, Mul, Sub},
     rc::Rc,
+    time::SystemTime,
 };
 
 use thiserror::Error;
@@ -21,6 +22,10 @@ pub enum RuntimeError {
     UninitializedVariable(String),
     #[error("break outside of a loop")]
     InvalidBreak,
+    #[error("not callable: {0}")]
+    NotCallable(String),
+    #[error("arity mismatch: {0}")]
+    ArityMismatch(String),
 }
 
 pub enum UnwindCause {
@@ -33,6 +38,7 @@ pub enum Value {
     String(Rc<String>),
     Number(f64),
     Bool(bool),
+    Callable(Builtin),
     Nil,
 }
 
@@ -44,6 +50,13 @@ impl Value {
             _ => true,
         }
     }
+
+    fn to_callable(&self) -> Option<&dyn Callable> {
+        match self {
+            Self::Callable(builtin) => Some(builtin),
+            _ => None,
+        }
+    }
 }
 
 impl Display for Value {
@@ -53,7 +66,30 @@ impl Display for Value {
             Value::Number(n) => write!(f, "{}", n),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Nil => f.write_str("nil"),
+            Value::Callable(func) => write!(f, "{}", func.name),
         }
+    }
+}
+
+trait Callable {
+    fn arity(&self) -> u8;
+    fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError>;
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Builtin {
+    name: &'static str,
+    arity: u8,
+    call: fn(&mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError>,
+}
+
+impl Callable for Builtin {
+    fn arity(&self) -> u8 {
+        self.arity
+    }
+
+    fn call(&self, interperter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        (self.call)(interperter, args)
     }
 }
 
@@ -123,6 +159,13 @@ impl Sub for Value {
 
 type Environment = HashMap<String, Option<Value>>;
 
+// TODO: Move something else
+
+fn clock_impl(_interperter: &mut Interpreter, _args: Vec<Value>) -> Result<Value, RuntimeError> {
+    let duration = SystemTime::UNIX_EPOCH.elapsed().unwrap();
+    Ok(Value::Number(duration.as_secs_f64()))
+}
+
 pub struct Interpreter {
     // None indicates that the variable is defined by not yet initialized
     global_memory: Environment,
@@ -130,9 +173,18 @@ pub struct Interpreter {
 
 impl Interpreter {
     pub fn new() -> Interpreter {
-        Interpreter {
-            global_memory: Environment::new(),
-        }
+        let mut global_memory = Environment::new();
+
+        global_memory.insert(
+            "clock".to_string(),
+            Some(Value::Callable(Builtin {
+                name: "clock",
+                arity: 0,
+                call: clock_impl,
+            })),
+        );
+
+        Interpreter { global_memory }
     }
 
     pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
@@ -323,6 +375,26 @@ impl Interpreter {
                     Ok(left_val)
                 } else {
                     self.eval(context_stack, right)
+                }
+            }
+            Expr::Call { callee, arguments } => {
+                let callee = self.eval(context_stack, callee)?;
+                let args = arguments
+                    .iter()
+                    .map(|expr| self.eval(context_stack, expr))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if let Some(callable) = callee.to_callable() {
+                    if args.len() != callable.arity().into() {
+                        Err(UnwindCause::Error(RuntimeError::ArityMismatch(
+                            callee.to_string(),
+                        )))
+                    } else {
+                        callable.call(self, args).map_err(|e| UnwindCause::Error(e))
+                    }
+                } else {
+                    return Err(UnwindCause::Error(RuntimeError::NotCallable(
+                        callee.to_string(),
+                    )));
                 }
             }
         }

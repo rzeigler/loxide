@@ -236,9 +236,16 @@ impl<'lex> Scanner<'lex> {
         None
     }
 
-    pub fn peek(&mut self) -> Result<Token<'lex>, Error> {
+    pub fn peek(&self) -> Result<Token<'lex>, Error> {
         let mut clone = self.clone();
         clone.next()
+    }
+
+    pub fn peek_pos(&self) -> Pos {
+        match self.peek() {
+            Ok(token) => token.pos,
+            Err(error) => error.pos,
+        }
     }
 
     pub fn next(&mut self) -> Result<Token<'lex>, Error> {

@@ -65,6 +65,10 @@ pub enum Expr<'a> {
         op: LogicalOp,
         right: &'a Expr<'a>,
     },
+    Call {
+        callee: &'a Expr<'a>,
+        arguments: Vec<'a, &'a Expr<'a>>,
+    },
 }
 
 impl<'a> Display for Expr<'a> {
@@ -82,6 +86,13 @@ impl<'a> Display for Expr<'a> {
             Expr::Identifier(id) => write!(f, "(ident {})", id),
             Expr::Assignment { target, expr } => write!(f, "(= {} {})", target, expr),
             Expr::Logical { left, op, right } => write!(f, "({} {} {})", op, left, right),
+            Expr::Call { callee, arguments } => {
+                write!(f, "(call {}", callee)?;
+                for arg in arguments {
+                    write!(f, " {}", arg)?;
+                }
+                f.write_str(")")
+            }
         }
     }
 }
@@ -178,6 +189,12 @@ struct ParsePanic {}
 
 pub trait ErrorReporter {
     fn report(&mut self, pos: Pos, message: &str);
+}
+
+struct TestErrorReporter;
+
+impl ErrorReporter for TestErrorReporter {
+    fn report(&mut self, pos: Pos, message: &str) {}
 }
 
 pub struct WriteErrorReporter<'w, W>
@@ -734,8 +751,64 @@ where
             expr: right,
         }))
     } else {
-        primary(arena, reporter, scanner)
+        call(arena, reporter, scanner)
     }
+}
+
+fn call<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Expr<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    let mut expr = primary(arena, reporter, scanner)?;
+    loop {
+        if scanner.next_if(|next| *next == Symbol::LeftParen).is_some() {
+            expr = finish_call(arena, reporter, scanner, expr)?;
+        } else {
+            break;
+        }
+    }
+    Ok(expr)
+}
+
+fn finish_call<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+    callee: &'arena Expr<'arena>,
+) -> Result<&'arena Expr<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    let mut args = Vec::new_in(arena);
+    if scanner
+        .next_if(|next| *next == Symbol::RightParen)
+        .is_none()
+    {
+        loop {
+            if args.len() >= 255 {
+                reporter.report(scanner.peek_pos(), "Too many function arguments");
+            } else {
+                let arg = expr(arena, reporter, scanner)?;
+                args.push(arg);
+            }
+            if !scanner.next_if(|next| *next == Symbol::Comma).is_some() {
+                break;
+            }
+        }
+        // Note: we only need to consume the trailing ) if we didn't consume it in the has args branch
+        if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
+            reporter.report(pos, "Expect ')' after arguments");
+            return Err(ParsePanic {});
+        }
+    }
+    Ok(arena.alloc(Expr::Call {
+        callee: callee,
+        arguments: args,
+    }))
 }
 
 fn primary<'arena, 'src, Reporter>(
@@ -956,5 +1029,11 @@ mod test {
         let mut result = String::new();
         std::fmt::write(&mut result, format_args!("{}", expr)).unwrap();
         assert_eq!("(* (- 123) (group 45.67))", result);
+    }
+
+    #[test]
+    fn test_parse_call() {
+        let arena = Bump::new();
+        let program = parse(&arena, &mut TestErrorReporter {}, Scanner::new("clock();")).unwrap();
     }
 }
