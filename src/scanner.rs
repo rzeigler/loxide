@@ -209,7 +209,8 @@ impl<'lex> Scanner<'lex> {
         P: FnOnce(&TokenType<'lex>) -> bool,
     {
         let before = self.clone();
-        if let Ok(token) = self.next() {
+        let next = self.next();
+        if let Ok(token) = next {
             if predicate(&token.data) {
                 return Some(token);
             }
@@ -494,7 +495,9 @@ impl<'lex> Scanner<'lex> {
                 }
                 c if c.is_ascii_alphabetic() => {
                     let mut num_len = 1;
-                    while self.consume_next_char_if_match(|ch| ch.is_ascii_alphanumeric()) {
+                    while self
+                        .consume_next_char_if_match(|ch| ch.is_ascii_alphanumeric() || ch == b'_')
+                    {
                         num_len += 1;
                     }
                     self.offset_in_line += num_len;
