@@ -1,6 +1,8 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
+    io::{self, stdin, Read},
+    num::ParseFloatError,
     ops::{Add, Div, Mul, Sub},
     rc::Rc,
     time::SystemTime,
@@ -26,6 +28,10 @@ pub enum RuntimeError {
     NotCallable(String),
     #[error("arity mismatch: {0}")]
     ArityMismatch(String),
+    #[error("number format error: {0}")]
+    NumberFormat(#[from] ParseFloatError),
+    #[error("io error: {0}")]
+    IOError(#[from] io::Error),
 }
 
 pub enum UnwindCause {
@@ -77,7 +83,7 @@ trait Callable {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct Builtin {
+pub struct Builtin {
     name: &'static str,
     arity: u8,
     call: fn(&mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError>,
@@ -159,11 +165,28 @@ impl Sub for Value {
 
 type Environment = HashMap<String, Option<Value>>;
 
-// TODO: Move something else
-
 fn clock_impl(_interperter: &mut Interpreter, _args: Vec<Value>) -> Result<Value, RuntimeError> {
     let duration = SystemTime::UNIX_EPOCH.elapsed().unwrap();
     Ok(Value::Number(duration.as_secs_f64()))
+}
+
+fn read_stdin_impl(
+    _interperter: &mut Interpreter,
+    _args: Vec<Value>,
+) -> Result<Value, RuntimeError> {
+    let mut result = String::new();
+    _ = stdin().read_to_string(&mut result)?;
+    Ok(Value::String(Rc::new(result)))
+}
+
+fn parse_num_impl(_interperter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError> {
+    match &args[0] {
+        Value::String(str) => {
+            let f = str.parse::<f64>()?;
+            Ok(Value::Number(f))
+        }
+        _ => Err(RuntimeError::TypeError),
+    }
 }
 
 pub struct Interpreter {
@@ -181,6 +204,24 @@ impl Interpreter {
                 name: "clock",
                 arity: 0,
                 call: clock_impl,
+            })),
+        );
+
+        global_memory.insert(
+            "read_stdin".to_string(),
+            Some(Value::Callable(Builtin {
+                name: "read_stdin",
+                arity: 0,
+                call: read_stdin_impl,
+            })),
+        );
+
+        global_memory.insert(
+            "parse_num".to_string(),
+            Some(Value::Callable(Builtin {
+                name: "parse_num",
+                arity: 1,
+                call: parse_num_impl,
             })),
         );
 

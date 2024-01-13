@@ -1,1 +1,2 @@
 print clock();
+print parse_num("12");

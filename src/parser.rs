@@ -37,7 +37,7 @@ pub enum Stmt<'a> {
     Break,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Expr<'a> {
     Ternary {
         test: &'a Expr<'a>,
@@ -97,7 +97,7 @@ impl<'a> Display for Expr<'a> {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryOp {
     Equal,
     NotEqual,
@@ -128,7 +128,7 @@ impl Display for BinaryOp {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UnaryOp {
     Not,
     Negative,
@@ -143,7 +143,7 @@ impl Display for UnaryOp {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogicalOp {
     And,
     Or,
@@ -158,7 +158,7 @@ impl Display for LogicalOp {
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal<'a> {
     Number(OrderedFloat<f64>),
     String(&'a str),
@@ -310,7 +310,7 @@ fn synchronize(scanner: &mut Scanner) {
         let next = scanner.peek();
         match next {
             Ok(token) if token.data == Symbol::Semicolon => {
-                _ = scanner.next().unwrap();
+                _ = scanner.next();
                 break;
             }
             Ok(token) if token.data == TokenType::Eof => {
@@ -319,7 +319,7 @@ fn synchronize(scanner: &mut Scanner) {
             }
             _ => {
                 // Consume the token we saw
-                let _ = scanner.next().unwrap();
+                let _ = scanner.next();
             }
         }
     }
@@ -1034,6 +1034,22 @@ mod test {
     #[test]
     fn test_parse_call() {
         let arena = Bump::new();
-        let program = parse(&arena, &mut TestErrorReporter {}, Scanner::new("clock();")).unwrap();
+        let program = parse(
+            &arena,
+            &mut TestErrorReporter {},
+            Scanner::new("print clock();"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_parse_call_args() {
+        let arena = Bump::new();
+        let program = parse(
+            &arena,
+            &mut TestErrorReporter {},
+            Scanner::new("print print_num(\"12.3\");"),
+        );
+        program.unwrap();
     }
 }
