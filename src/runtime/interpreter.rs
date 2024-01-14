@@ -185,7 +185,7 @@ impl Interpreter {
 
     pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
         for stmt in expr.0 {
-            self.execute(stmt).map_err(|err| match err {
+            self.execute(&stmt).map_err(|err| match err {
                 UnwindCause::Break => RuntimeError::InvalidBreak,
                 UnwindCause::Error(err) => err,
             })?;
@@ -278,10 +278,7 @@ impl Interpreter {
         }
     }
 
-    fn execute_block(
-        &mut self,
-        stmts: &bumpalo::collections::Vec<&Stmt>,
-    ) -> Result<(), UnwindCause> {
+    fn execute_block(&mut self, stmts: &[Stmt]) -> Result<(), UnwindCause> {
         for stmt in stmts {
             self.execute(stmt)?;
         }

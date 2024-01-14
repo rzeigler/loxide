@@ -10,7 +10,6 @@ use std::io::BufReader;
 
 use anyhow::{Context, Result};
 
-use bumpalo::Bump;
 use parser::parse;
 use runtime::stock_interpreter;
 use runtime::Interpreter;
@@ -69,14 +68,13 @@ fn run_prompt() -> Result<()> {
 }
 
 fn run(interpreter: &mut Interpreter, code: &str, in_repl: bool) {
-    let bump = Bump::new();
     let mut stderr = std::io::stderr().lock();
     let mut reporter = WriteErrorReporter::new(&mut stderr);
 
-    match parse(&bump, &mut reporter, Scanner::new(code)) {
+    match parse(&mut reporter, Scanner::new(code)) {
         Ok(program) => {
             if in_repl && program.0.len() == 1 {
-                match interpreter.interpret_one(program.0[0]) {
+                match interpreter.interpret_one(&program.0[0]) {
                     Ok(Value::Nil) => {}
                     Ok(v) => println!("{}", v),
                     Err(e) => eprintln!("{}", e),

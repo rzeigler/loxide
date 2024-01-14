@@ -7,76 +7,73 @@ use crate::scanner::Scanner;
 use crate::scanner::Symbol;
 use crate::scanner::Token;
 use crate::scanner::TokenType;
-use bumpalo::collections::Vec;
-use bumpalo::vec;
-use bumpalo::Bump;
 use ordered_float::OrderedFloat;
 use thiserror::Error;
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Program<'a>(pub Vec<'a, &'a Stmt<'a>>);
+pub struct Program(pub Vec<Stmt>);
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Stmt<'a> {
+pub enum Stmt {
     VarDecl {
-        identifier: &'a str,
-        init: Option<&'a Expr<'a>>,
+        identifier: String,
+        init: Option<Expr>,
     },
     FunDecl {
-        name: &'a str,
-        parameters: Vec<'a, &'a str>,
-        body: &'a Stmt<'a>,
+        name: String,
+        parameters: Vec<String>,
+        body: Box<Stmt>,
     },
-    Expr(&'a Expr<'a>),
-    Print(&'a Expr<'a>),
-    Block(Vec<'a, &'a Stmt<'a>>),
+    Expr(Expr),
+    Print(Expr),
+    Block(Vec<Stmt>),
     If {
-        expr: &'a Expr<'a>,
-        then: &'a Stmt<'a>,
-        or_else: Option<&'a Stmt<'a>>,
+        expr: Expr,
+        then: Box<Stmt>,
+        or_else: Option<Box<Stmt>>,
     },
     Loop {
-        expr: &'a Expr<'a>,
-        body: &'a Stmt<'a>,
+        expr: Expr,
+        body: Box<Stmt>,
     },
     Break,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Expr<'a> {
+pub enum Expr {
     Ternary {
-        test: &'a Expr<'a>,
-        if_true: &'a Expr<'a>,
-        if_false: &'a Expr<'a>,
+        test: Box<Expr>,
+        if_true: Box<Expr>,
+        if_false: Box<Expr>,
     },
     Binary {
-        left: &'a Expr<'a>,
+        left: Box<Expr>,
         op: BinaryOp,
-        right: &'a Expr<'a>,
+        right: Box<Expr>,
     },
     Unary {
         op: UnaryOp,
-        expr: &'a Expr<'a>,
+        expr: Box<Expr>,
     },
-    Group(&'a Expr<'a>),
-    Literal(Literal<'a>),
-    Identifier(&'a str),
+    Group(Box<Expr>),
+    Literal(Literal),
+    Identifier(String),
     Assignment {
-        target: &'a str,
-        expr: &'a Expr<'a>,
+        target: String,
+        expr: Box<Expr>,
     },
     Logical {
-        left: &'a Expr<'a>,
+        left: Box<Expr>,
         op: LogicalOp,
-        right: &'a Expr<'a>,
+        right: Box<Expr>,
     },
     Call {
-        callee: &'a Expr<'a>,
-        arguments: Vec<'a, &'a Expr<'a>>,
+        callee: Box<Expr>,
+        arguments: Vec<Expr>,
     },
 }
 
-impl<'a> Display for Expr<'a> {
+impl<'a> Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Expr::Literal(lit) => write!(f, "{}", lit),
@@ -164,14 +161,14 @@ impl Display for LogicalOp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Literal<'a> {
+pub enum Literal {
     Number(OrderedFloat<f64>),
-    String(&'a str),
+    String(String),
     Boolean(bool),
     Nil,
 }
 
-impl<'a> Display for Literal<'a> {
+impl<'a> Display for Literal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Literal::Number(OrderedFloat(dbl)) => write!(f, "{}", dbl),
@@ -248,10 +245,9 @@ where
 }
 
 pub fn parse<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     mut scanner: Scanner<'src>,
-) -> Result<Program<'arena>, Error>
+) -> Result<Program, Error>
 where
     Reporter: ErrorReporter,
 {
@@ -259,7 +255,7 @@ where
         reporter,
         errored: false,
     };
-    if let Ok(program) = program(arena, &mut reporter, &mut scanner) {
+    if let Ok(program) = program(&mut reporter, &mut scanner) {
         expect_eof(&mut reporter, &mut scanner);
         if reporter.errored {
             Err(Error {})
@@ -291,16 +287,15 @@ where
 }
 
 fn program<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<Program<'arena>, ParsePanic>
+) -> Result<Program, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let mut stmts = Vec::<&'arena Stmt<'arena>>::new_in(arena);
+    let mut stmts = Vec::<Stmt>::new();
     while !scanner.is_at_eof() {
-        match declaration(arena, reporter, scanner) {
+        match declaration(reporter, scanner) {
             Ok(stmt) => stmts.push(stmt),
             Err(_) => synchronize(scanner),
         }
@@ -331,27 +326,25 @@ fn synchronize(scanner: &mut Scanner) {
 }
 
 fn declaration<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
     if scanner.next_if(|data| *data == Keyword::Var).is_some() {
-        finish_var_decl(arena, reporter, scanner)
+        finish_var_decl(reporter, scanner)
     } else if scanner.next_if(|data| *data == Keyword::Fun).is_some() {
-        finish_fun_decl(arena, reporter, scanner)
+        finish_fun_decl(reporter, scanner)
     } else {
-        statement(arena, reporter, scanner)
+        statement(reporter, scanner)
     }
 }
 
 fn finish_var_decl<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -360,7 +353,7 @@ where
             Ok(Token {
                 data: TokenType::Identifier(identifier),
                 pos: _,
-            }) => arena.alloc_str(identifier), // Copy into the AST arena
+            }) => identifier.to_string(), // Copy into the AST arena
             Ok(token) => {
                 reporter.report(token.pos, "expected an identifier");
                 return Err(ParsePanic {});
@@ -372,7 +365,7 @@ where
         }
     };
     let initializer = if scanner.next_if(|next| *next == Symbol::Equal).is_some() {
-        Some(expr(arena, reporter, scanner)?)
+        Some(expr(reporter, scanner)?)
     } else {
         // Generate a synthetic initializer as the constant null
         None
@@ -381,27 +374,26 @@ where
         reporter.report(pos, "expected ';' after an expression");
         return Err(ParsePanic {});
     }
-    Ok(arena.alloc(Stmt::VarDecl {
+    Ok(Stmt::VarDecl {
         identifier,
         init: initializer,
-    }))
+    })
 }
 
 fn finish_fun_decl<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let name = arena.alloc_str(expect_identifier(reporter, scanner)?);
+    let name = expect_identifier(reporter, scanner)?.to_string();
     if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftParen) {
         reporter.report(pos, "expected '(' after function name");
         return Err(ParsePanic {});
     }
 
-    let mut parameters = Vec::new_in(arena);
+    let mut parameters = Vec::new();
     if scanner
         .next_if(|next| *next == Symbol::RightParen)
         .is_none()
@@ -412,68 +404,65 @@ where
             return Err(ParsePanic {});
         }
     }
-    let body = block(arena, reporter, scanner)?;
-    Ok(arena.alloc(Stmt::FunDecl {
+    let body = Box::new(block(reporter, scanner)?);
+    Ok(Stmt::FunDecl {
         name,
         parameters,
         body,
-    }))
+    })
 }
 
 fn statement<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
     if scanner.next_if(|next| *next == Keyword::If).is_some() {
-        if_stmt(arena, reporter, scanner)
+        if_stmt(reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::While).is_some() {
-        while_stmt(arena, reporter, scanner)
+        while_stmt(reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::For).is_some() {
-        for_stmt(arena, reporter, scanner)
+        for_stmt(reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::Print).is_some() {
-        print_stmt(arena, reporter, scanner)
+        print_stmt(reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::Break).is_some() {
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
             reporter.report(pos, "expected ';' after break");
             return Err(ParsePanic {});
         }
-        Ok(arena.alloc(Stmt::Break))
+        Ok(Stmt::Break)
     } else if scanner.next_if(|next| *next == Symbol::LeftBrace).is_some() {
-        block(arena, reporter, scanner)
+        block(reporter, scanner)
     } else {
-        expr_stmt(arena, reporter, scanner)
+        expr_stmt(reporter, scanner)
     }
 }
 
 fn block<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let mut stmts: Vec<'arena, &'arena Stmt<'arena>> = Vec::new_in(arena);
+    let mut stmts: Vec<Stmt> = Vec::new();
     while !scanner.is_at_eof() && !peek_matches(scanner, Symbol::RightBrace) {
-        let stmt = declaration(arena, reporter, scanner)?;
+        let stmt = declaration(reporter, scanner)?;
         stmts.push(stmt);
     }
     if let Err(pos) = expect_next_symbol(scanner, Symbol::RightBrace) {
         reporter.report(pos, "Expected '}' after block");
         return Err(ParsePanic {});
     }
-    Ok(arena.alloc(Stmt::Block(stmts)))
+    Ok(Stmt::Block(stmts))
 }
 
 fn if_stmt<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -481,29 +470,28 @@ where
         reporter.report(pos, "expected '(' after if");
         return Err(ParsePanic {});
     }
-    let test_expr = expr(arena, reporter, scanner)?;
+    let test_expr = expr(reporter, scanner)?;
     if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
         reporter.report(pos, "expected ')' after if condition");
         return Err(ParsePanic {});
     }
-    let then_branch = statement(arena, reporter, scanner)?;
+    let then_branch = Box::new(statement(reporter, scanner)?);
     let else_branch = if scanner.next_if(|next| *next == Keyword::Else).is_some() {
-        Some(statement(arena, reporter, scanner)?)
+        Some(Box::new(statement(reporter, scanner)?))
     } else {
         None
     };
-    Ok(arena.alloc(Stmt::If {
+    Ok(Stmt::If {
         expr: test_expr,
         then: then_branch,
         or_else: else_branch,
-    }))
+    })
 }
 
 fn while_stmt<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -511,20 +499,19 @@ where
         reporter.report(pos, "expected '(' after when");
         return Err(ParsePanic {});
     }
-    let expr = expr(arena, reporter, scanner)?;
+    let expr = expr(reporter, scanner)?;
     if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
         reporter.report(pos, "expected ')' after when condition");
         return Err(ParsePanic {});
     }
-    let body = statement(arena, reporter, scanner)?;
-    Ok(arena.alloc(Stmt::Loop { expr, body }))
+    let body = Box::new(statement(reporter, scanner)?);
+    Ok(Stmt::Loop { expr, body })
 }
 
 fn for_stmt<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -539,15 +526,15 @@ where
         .next_if(|next| *next == Keyword::Var)
         .is_some()
     {
-        Some(declaration(arena, reporter, scanner)?)
+        Some(declaration(reporter, scanner)?)
     } else {
-        Some(expr_stmt(arena, reporter, scanner)?)
+        Some(expr_stmt(reporter, scanner)?)
     };
 
     let condition = if scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
-        arena.alloc(Expr::Literal(Literal::Boolean(true)))
+        Expr::Literal(Literal::Boolean(true))
     } else {
-        let cond = expr(arena, reporter, scanner)?;
+        let cond = expr(reporter, scanner)?;
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
             reporter.report(pos, "expected ';' after loop condition");
             return Err(ParsePanic {});
@@ -561,92 +548,88 @@ where
     {
         None
     } else {
-        let expr = expr(arena, reporter, scanner)?;
+        let expr = expr(reporter, scanner)?;
         if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
             reporter.report(pos, "expected )' after for clauses");
             return Err(ParsePanic {});
         }
-        Some(arena.alloc(Stmt::Expr(expr)))
+        Some(Stmt::Expr(expr))
     };
 
-    let mut body = statement(arena, reporter, scanner)?;
+    let mut body = statement(reporter, scanner)?;
     // TODO: Avoid double nesting the blocks
     if let Some(incr) = incr {
-        body = arena.alloc(Stmt::Block(vec![in &arena; body, incr]));
+        body = Stmt::Block(vec![body, incr]);
     }
 
-    let for_loop = arena.alloc(Stmt::Loop {
+    let for_loop = Stmt::Loop {
         expr: condition,
-        body: body,
-    });
+        body: Box::new(body),
+    };
 
     if let Some(init) = initializer {
-        Ok(arena.alloc(Stmt::Block(vec![in &arena; init, for_loop])))
+        Ok(Stmt::Block(vec![init, for_loop]))
     } else {
         Ok(for_loop)
     }
 }
 
 fn print_stmt<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let expr = expr(arena, reporter, scanner)?;
+    let expr = expr(reporter, scanner)?;
     if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
         reporter.report(pos, "expected ';' after an expression");
         return Err(ParsePanic {});
     }
-    Ok(arena.alloc(Stmt::Print(expr)))
+    Ok(Stmt::Print(expr))
 }
 
 fn expr_stmt<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Stmt<'arena>, ParsePanic>
+) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let expr = expr(arena, reporter, scanner)?;
+    let expr = expr(reporter, scanner)?;
     if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
         reporter.report(pos, "expected ';' after an expression");
         return Err(ParsePanic {});
     }
-    Ok(arena.alloc(Stmt::Expr(expr)))
+    Ok(Stmt::Expr(expr))
 }
 
 fn expr<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    assignment(arena, reporter, scanner)
+    assignment(reporter, scanner)
 }
 
 fn assignment<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let expr = logical_or(arena, reporter, scanner)?;
+    let expr = logical_or(reporter, scanner)?;
     if let Some(eq) = scanner.next_if(|token| *token == Symbol::Equal) {
-        let rhs = logical_or(arena, reporter, scanner)?;
+        let rhs = Box::new(logical_or(reporter, scanner)?);
         match expr {
             // A valid assignment target
-            Expr::Identifier(name) => Ok(arena.alloc(Expr::Assignment {
-                target: *name,
+            Expr::Identifier(name) => Ok(Expr::Assignment {
+                target: name,
                 expr: rhs,
-            })),
+            }),
             // Not a valid assignment target
             // Report the error to trigger top level error, but don't error out here so we continue parsing
             _ => {
@@ -690,104 +673,96 @@ const BINARY_SYMBOLS: [Symbol; 10] = [
 ];
 
 fn logical_or<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    left_recursive_logical_op(arena, reporter, scanner, Keyword::Or, logical_and)
+    left_recursive_logical_op(reporter, scanner, Keyword::Or, logical_and)
 }
 
 fn logical_and<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    left_recursive_logical_op(arena, reporter, scanner, Keyword::And, equality)
+    left_recursive_logical_op(reporter, scanner, Keyword::And, equality)
 }
 
 fn equality<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    left_recursive_binary_op(arena, reporter, scanner, &EQUALITY_SYMBOLS, ternary)
+    left_recursive_binary_op(reporter, scanner, &EQUALITY_SYMBOLS, ternary)
 }
 
 fn ternary<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let expr = comparison(arena, reporter, scanner)?;
+    let expr = comparison(reporter, scanner)?;
     if scanner.next_if(|next| *next == Symbol::Question).is_none() {
         Ok(expr)
     } else {
-        let if_true = comparison(arena, reporter, scanner)?;
+        let if_true = Box::new(comparison(reporter, scanner)?);
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Colon) {
             reporter.report(pos, "expected a ':' in ternary");
             return Err(ParsePanic {});
         }
-        let if_false = comparison(arena, reporter, scanner)?;
-        Ok(arena.alloc(Expr::Ternary {
-            test: expr,
+        let if_false = Box::new(comparison(reporter, scanner)?);
+        Ok(Expr::Ternary {
+            test: Box::new(expr),
             if_true,
             if_false,
-        }))
+        })
     }
 }
 
 fn comparison<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    left_recursive_binary_op(arena, reporter, scanner, &COMPARISON_SYMBOLS, term)
+    left_recursive_binary_op(reporter, scanner, &COMPARISON_SYMBOLS, term)
 }
 
 fn term<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    left_recursive_binary_op(arena, reporter, scanner, &TERM_SYMBOLS, factor)
+    left_recursive_binary_op(reporter, scanner, &TERM_SYMBOLS, factor)
 }
 
 fn factor<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    left_recursive_binary_op(arena, reporter, scanner, &FACTOR_SYMBOLS, unary)
+    left_recursive_binary_op(reporter, scanner, &FACTOR_SYMBOLS, unary)
 }
 
 const UNARY_SYMBOLS: [Symbol; 2] = [Symbol::Minus, Symbol::Bang];
 
 fn unary<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
@@ -796,28 +771,27 @@ where
         _ => None,
     }) {
         let operator = symbol_to_unary_op(symbol);
-        let right = unary(arena, reporter, scanner)?;
-        Ok(arena.alloc(Expr::Unary {
+        let right = Box::new(unary(reporter, scanner)?);
+        Ok(Expr::Unary {
             op: operator,
             expr: right,
-        }))
+        })
     } else {
-        call(arena, reporter, scanner)
+        call(reporter, scanner)
     }
 }
 
 fn call<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let mut expr = primary(arena, reporter, scanner)?;
+    let mut expr = primary(reporter, scanner)?;
     loop {
         if scanner.next_if(|next| *next == Symbol::LeftParen).is_some() {
-            expr = finish_call(arena, reporter, scanner, expr)?;
+            expr = finish_call(reporter, scanner, expr)?;
         } else {
             break;
         }
@@ -826,15 +800,14 @@ where
 }
 
 fn finish_call<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-    callee: &'arena Expr<'arena>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+    callee: Expr,
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let mut args = Vec::new_in(arena);
+    let mut args = Vec::new();
     if scanner
         .next_if(|next| *next == Symbol::RightParen)
         .is_none()
@@ -843,7 +816,7 @@ where
             if args.len() >= 255 {
                 reporter.report(scanner.peek_pos(), "Too many function arguments");
             } else {
-                let arg = expr(arena, reporter, scanner)?;
+                let arg = expr(reporter, scanner)?;
                 args.push(arg);
             }
             if !scanner.next_if(|next| *next == Symbol::Comma).is_some() {
@@ -856,45 +829,35 @@ where
             return Err(ParsePanic {});
         }
     }
-    Ok(arena.alloc(Expr::Call {
-        callee: callee,
+    Ok(Expr::Call {
+        callee: Box::new(callee),
         arguments: args,
-    }))
+    })
 }
 
 fn primary<'arena, 'src, Reporter>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
 {
     match scanner.next() {
         Ok(token) => {
             let expr = match token.data {
-                TokenType::Keyword(Keyword::True) => {
-                    arena.alloc(Expr::Literal(Literal::Boolean(true)))
-                }
-                TokenType::Keyword(Keyword::False) => {
-                    arena.alloc(Expr::Literal(Literal::Boolean(false)))
-                }
-                TokenType::Keyword(Keyword::Nil) => arena.alloc(Expr::Literal(Literal::Nil)),
-                TokenType::String(string) => {
-                    let ast_string = arena.alloc_str(string);
-                    arena.alloc(Expr::Literal(Literal::String(ast_string)))
-                }
-                TokenType::Number(number) => {
-                    arena.alloc(Expr::Literal(Literal::Number(OrderedFloat(number))))
-                }
+                TokenType::Keyword(Keyword::True) => Expr::Literal(Literal::Boolean(true)),
+                TokenType::Keyword(Keyword::False) => Expr::Literal(Literal::Boolean(false)),
+                TokenType::Keyword(Keyword::Nil) => Expr::Literal(Literal::Nil),
+                TokenType::String(string) => Expr::Literal(Literal::String(string.to_string())),
+                TokenType::Number(number) => Expr::Literal(Literal::Number(OrderedFloat(number))),
                 TokenType::Symbol(Symbol::LeftParen) => {
-                    let inner = expr(arena, reporter, scanner)?;
+                    let inner = expr(reporter, scanner)?;
                     match scanner.next() {
                         Ok(token) => {
                             match token.data {
                                 TokenType::Symbol(Symbol::RightParen) => {
                                     // This is the happy path in that we have successfully matched the trailing group
-                                    arena.alloc(Expr::Group(inner))
+                                    Expr::Group(Box::new(inner))
                                 }
                                 _ => {
                                     reporter.report(token.pos, "expected a ')'");
@@ -908,9 +871,7 @@ where
                         }
                     }
                 }
-                TokenType::Identifier(ident) => {
-                    arena.alloc(Expr::Identifier(arena.alloc_str(ident)))
-                }
+                TokenType::Identifier(ident) => Expr::Identifier(ident.to_string()),
                 // An unexpected binary symbol so lets try and parse the rhs before raising the error
                 // - should be trapped by unary
                 TokenType::Symbol(symbol)
@@ -919,7 +880,7 @@ where
                     // Should this report something different?
                     reporter.report(token.pos, "binary operator without a left-hand side");
                     // result is unimportant, we are bailing anyway
-                    let _rhs = expr(arena, reporter, scanner);
+                    let _rhs = expr(reporter, scanner);
                     return Err(ParsePanic {});
                 }
                 _ => {
@@ -942,63 +903,53 @@ where
 // It occurs to me it might be possible to do this a single recursive call that unfolds generically
 // instead of encoding the recursion in separate helpers
 fn left_recursive_binary_op<'arena, 'src, Reporter, F>(
-    arena: &'arena Bump,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
     symbols: &[Symbol],
     higher_precedence: F,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
-    F: Fn(
-        &'arena Bump,
-        &mut Reporter,
-        &mut Scanner<'src>,
-    ) -> Result<&'arena Expr<'arena>, ParsePanic>,
+    F: Fn(&mut Reporter, &mut Scanner<'src>) -> Result<Expr, ParsePanic>,
 {
-    let mut expr = higher_precedence(arena, reporter, scanner)?;
+    let mut expr = higher_precedence(reporter, scanner)?;
     while let Some(symbol) = scanner.next_if_some(|next| match next {
         TokenType::Symbol(s) if symbols.contains(&s) => Some(s),
         _ => None,
     }) {
         let binary_op = symbol_to_binary_op(symbol);
-        let right = higher_precedence(arena, reporter, scanner)?;
-        expr = arena.alloc(Expr::Binary {
-            left: expr,
+        let right = Box::new(higher_precedence(reporter, scanner)?);
+        expr = Expr::Binary {
+            left: Box::new(expr),
             op: binary_op,
             right,
-        })
+        }
     }
     Ok(expr)
 }
 
-fn left_recursive_logical_op<'arena, 'src, Reporter, F>(
-    arena: &'arena Bump,
+fn left_recursive_logical_op<'src, Reporter, F>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
     keyword: Keyword,
     higher_precedence: F,
-) -> Result<&'arena Expr<'arena>, ParsePanic>
+) -> Result<Expr, ParsePanic>
 where
     Reporter: ErrorReporter,
-    F: Fn(
-        &'arena Bump,
-        &mut Reporter,
-        &mut Scanner<'src>,
-    ) -> Result<&'arena Expr<'arena>, ParsePanic>,
+    F: Fn(&mut Reporter, &mut Scanner<'src>) -> Result<Expr, ParsePanic>,
 {
-    let mut expr: &Expr<'_> = higher_precedence(arena, reporter, scanner)?;
+    let mut expr = higher_precedence(reporter, scanner)?;
     while let Some(kw) = scanner.next_if_some(|next| match next {
         TokenType::Keyword(kw) if keyword == kw => Some(kw),
         _ => None,
     }) {
         let logical_op = keyword_to_logical_op(kw);
-        let right = higher_precedence(arena, reporter, scanner)?;
-        expr = arena.alloc(Expr::Logical {
-            left: expr,
+        let right = Box::new(higher_precedence(reporter, scanner)?);
+        expr = Expr::Logical {
+            left: Box::new(expr),
             op: logical_op,
             right,
-        })
+        }
     }
     Ok(expr)
 }
@@ -1081,23 +1032,16 @@ where
 }
 
 fn comma_separated_identifiers<'arena, 'src, Reporter>(
-    idents: &mut Vec<'arena, &'arena str>,
+    idents: &mut Vec<String>,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<(), ParsePanic>
 where
     Reporter: ErrorReporter,
 {
-    let first = idents
-        .bump()
-        .alloc_str(expect_identifier(reporter, scanner)?);
-    idents.push(first);
-
+    idents.push(expect_identifier(reporter, scanner)?.to_string());
     while scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
-        let id = idents
-            .bump()
-            .alloc_str(expect_identifier(reporter, scanner)?);
-        idents.push(id);
+        idents.push(expect_identifier(reporter, scanner)?.to_string());
     }
 
     Ok(())
@@ -1110,17 +1054,15 @@ mod test {
     #[test]
     fn test_pretty_print() {
         // (* (- 123) (group 45.67))
-        let number_1 = Expr::Literal(Literal::Number(OrderedFloat(123f64)));
-        let inner_1 = Expr::Unary {
-            op: UnaryOp::Negative,
-            expr: &number_1,
-        };
-        let number_2 = Expr::Literal(Literal::Number(OrderedFloat(45.67f64)));
-        let inner_2 = Expr::Group(&number_2);
         let expr = Expr::Binary {
-            left: &inner_1,
+            left: Box::new(Expr::Unary {
+                op: UnaryOp::Negative,
+                expr: Box::new(Expr::Literal(Literal::Number(OrderedFloat(123f64)))),
+            }),
             op: BinaryOp::Multiply,
-            right: &inner_2,
+            right: Box::new(Expr::Group(Box::new(Expr::Literal(Literal::Number(
+                OrderedFloat(45.67f64),
+            ))))),
         };
 
         let mut result = String::new();
@@ -1130,20 +1072,12 @@ mod test {
 
     #[test]
     fn test_parse_call() {
-        let arena = Bump::new();
-        _ = parse(
-            &arena,
-            &mut TestErrorReporter {},
-            Scanner::new("print clock();"),
-        )
-        .unwrap();
+        _ = parse(&mut TestErrorReporter {}, Scanner::new("print clock();")).unwrap();
     }
 
     #[test]
     fn test_parse_call_args() {
-        let arena = Bump::new();
         let program = parse(
-            &arena,
             &mut TestErrorReporter {},
             Scanner::new("print print_num(\"12.3\");"),
         );
