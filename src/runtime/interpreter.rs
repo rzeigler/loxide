@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::HashMap,
     fmt::Debug,
     io::{self},
@@ -77,18 +78,6 @@ impl Debug for Value {
         }
     }
 }
-
-// impl Display for Value {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         match self {
-//             Value::String(s) => write!(f, "'{}'", s),
-//             Value::Number(n) => write!(f, "{}", n),
-//             Value::Bool(b) => write!(f, "{}", b),
-//             Value::Nil => f.write_str("nil"),
-//             Value::Callable(func) => write!(f, "{}", func.name()),
-//         }
-//     }
-// }
 
 impl ToString for Value {
     fn to_string(&self) -> String {
@@ -180,19 +169,78 @@ impl Sub for Value {
     }
 }
 
-type Environment = HashMap<String, Option<Value>>;
+pub struct Environment {
+    bindings: RefCell<HashMap<String, Option<Value>>>, // None indicates name defined but unbound
+    parent: Option<Rc<Environment>>,
+}
+
+impl Environment {
+    pub fn new_global() -> Environment {
+        Environment {
+            bindings: RefCell::new(HashMap::new()),
+            parent: None,
+        }
+    }
+}
+
+#[derive(Error, Debug)]
+#[error("Unbound variable")]
+pub struct UnboundError {}
+
+impl Environment {
+    pub fn bind(&self, name: &str, value: Option<Value>) {
+        self.bindings.borrow_mut().insert(name.to_string(), value);
+    }
+
+    /// Lookup a value
+    /// The outer Option indicates whether or not the name exists
+    /// The inner Option indicates whether the value has been bound
+    pub fn lookup(&self, name: &str) -> Option<Option<Value>> {
+        if let Some(value) = self.bindings.borrow().get(name) {
+            Some(value.to_owned())
+        } else if let Some(parent) = &self.parent {
+            parent.lookup(name)
+        } else {
+            None
+        }
+    }
+
+    pub fn assign(&self, name: &str, value: Value) -> Result<(), UnboundError> {
+        if let Some(lvalue) = self.bindings.borrow_mut().get_mut(name) {
+            *lvalue = Some(value);
+            return Ok(());
+        } else if let Some(parent) = &self.parent {
+            return parent.assign(name, value);
+        } else {
+            return Err(UnboundError {});
+        }
+    }
+
+    pub fn open_scope(self: Rc<Environment>) -> Rc<Environment> {
+        Rc::new(Environment {
+            bindings: RefCell::new(HashMap::new()),
+            parent: Some(self),
+        })
+    }
+
+    pub fn close_scope(self: Rc<Environment>) -> Rc<Environment> {
+        self.parent.as_ref().unwrap().clone()
+    }
+}
 
 pub struct Interpreter {
     // None indicates that the variable is defined by not yet initialized
-    global_env: Environment,
-    context_envs: Vec<Environment>,
+    environment: Rc<Environment>,
 }
 
 impl Interpreter {
-    pub fn new_with_global(global_env: Environment) -> Interpreter {
+    pub fn new_from_global(global: Environment) -> Interpreter {
+        Interpreter::new_from_closure(Rc::new(global))
+    }
+
+    pub fn new_from_closure(closure: Rc<Environment>) -> Interpreter {
         Interpreter {
-            global_env,
-            context_envs: Vec::new(),
+            environment: closure,
         }
     }
 
@@ -218,40 +266,30 @@ impl Interpreter {
     }
 
     pub fn begin_scope(&mut self) {
-        self.context_envs.push(HashMap::new());
+        self.environment = self.environment.clone().open_scope();
     }
 
     pub fn end_scope(&mut self) {
-        self.context_envs.pop();
+        self.environment = self.environment.clone().close_scope();
     }
 
-    pub fn define_in_current_scope(&mut self, name: &str, value: Option<Value>) {
-        let scope = if let Some(scope) = self.context_envs.last_mut() {
-            scope
-        } else {
-            &mut self.global_env
-        };
-        scope.insert(name.to_string(), value);
+    pub fn current_env(&self) -> &Environment {
+        &self.environment
+    }
+
+    pub fn current_env_closure(&self) -> Rc<Environment> {
+        self.environment.clone()
     }
 
     pub fn execute(&mut self, stmt: &Stmt) -> Result<Value, UnwindCause> {
         match stmt {
             Stmt::VarDecl { identifier, init } => {
                 if let Some(expr) = init {
-                    let v = self.eval(expr)?;
-                    if let Some(top) = self.context_envs.last_mut() {
-                        top.insert(identifier.to_string(), Some(v.clone()));
-                    } else {
-                        self.global_env
-                            .insert(identifier.to_string(), Some(v.clone()));
-                    }
-                    Ok(v)
+                    let value = self.eval(expr)?;
+                    self.environment.bind(&identifier, Some(value.clone()));
+                    Ok(value)
                 } else {
-                    if let Some(top) = self.context_envs.last_mut() {
-                        top.insert(identifier.to_string(), None);
-                    } else {
-                        self.global_env.insert(identifier.to_string(), None);
-                    }
+                    self.environment.bind(&identifier, None);
                     Ok(Value::Nil)
                 }
             }
@@ -313,14 +351,10 @@ impl Interpreter {
                     name: name.clone(),
                     parameters: parameters.clone(),
                     body: body.as_ref().clone(),
+                    closure: self.current_env_closure(),
                 };
-                // Bind the function value in the top-most context
-                if let Some(local_scope) = self.context_envs.last_mut() {
-                    local_scope.insert(name.clone(), Some(Value::Callable(Rc::new(func))));
-                } else {
-                    self.global_env
-                        .insert(name.clone(), Some(Value::Callable(Rc::new(func))));
-                }
+                self.environment
+                    .bind(name, Some(Value::Callable(Rc::new(func))));
                 Ok(Value::Nil)
             }
             Stmt::Return { expr } => {
@@ -387,11 +421,25 @@ impl Interpreter {
             Expr::Literal(Literal::String(s)) => Ok(Value::String(Rc::new(s.to_string()))),
             Expr::Literal(Literal::Boolean(b)) => Ok(Value::Bool(*b)),
             Expr::Literal(Literal::Nil) => Ok(Value::Nil),
-            Expr::Identifier(ident) => self.lookup_value(ident),
+            Expr::Identifier(ident) => self
+                .environment
+                .lookup(ident)
+                // If there is no defined name, the outer option is None
+                .ok_or(RuntimeError::UnboundVariable(ident.to_owned()))
+                // If the name was defined, but there is not currently a value, the inner option is None
+                .and_then(|inner_value| {
+                    inner_value.ok_or(RuntimeError::UninitializedVariable(ident.to_owned()))
+                })
+                .map_err(|err| UnwindCause::Error(err)),
             Expr::Assignment { target, expr } => {
                 let value = self.eval(expr)?;
-                self.assign_value(target, value.clone())?;
-                Ok(value)
+                if let Err(_) = self.environment.assign(target, value.clone()) {
+                    Err(UnwindCause::Error(RuntimeError::UnboundVariable(
+                        target.to_owned(),
+                    )))
+                } else {
+                    Ok(value)
+                }
             }
             // We do this to support coallescing like behavior such as javascript has i.e. false || "a" should eval to "a"
             Expr::Logical {
@@ -439,43 +487,6 @@ impl Interpreter {
                 }
             }
         }
-    }
-
-    fn lookup_value(&self, identifier: &str) -> Result<Value, UnwindCause> {
-        for context in self.context_envs.iter().rev() {
-            if let Some(value) = context.get(identifier) {
-                let v = value.clone().ok_or(UnwindCause::Error(
-                    RuntimeError::UninitializedVariable(identifier.to_string()),
-                ))?;
-                return Ok(v);
-            }
-        }
-        self.global_env
-            .get(identifier)
-            .cloned()
-            .ok_or(UnwindCause::Error(RuntimeError::UnboundVariable(
-                identifier.to_string(),
-            )))
-            .and_then(|inner| {
-                inner.ok_or(UnwindCause::Error(RuntimeError::UninitializedVariable(
-                    identifier.to_string(),
-                )))
-            })
-    }
-
-    fn assign_value(&mut self, target: &str, value: Value) -> Result<(), UnwindCause> {
-        for context in self.context_envs.iter_mut().rev() {
-            if let Some(lvalue) = context.get_mut(target) {
-                *lvalue = Some(value);
-                return Ok(());
-            }
-        }
-
-        let lvalue = self.global_env.get_mut(target).ok_or(UnwindCause::Error(
-            RuntimeError::UnboundVariable(target.to_string()),
-        ))?;
-        *lvalue = Some(value);
-        Ok(())
     }
 }
 

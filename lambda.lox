@@ -1,0 +1,19 @@
+fun makeCounter(start) {
+    var i = start;
+
+    fun count() {
+        i = i + 1;
+        return i;
+    }
+
+    return count;
+}
+
+// Verify that we are managing closures correctly by resetting
+var counter = makeCounter(10);
+print counter();
+print counter();
+
+counter = makeCounter(10);
+print counter();
+print counter();

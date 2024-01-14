@@ -1,10 +1,10 @@
-use std::collections::HashMap;
 use std::io::prelude::*;
 use std::io::stdin;
 use std::rc::Rc;
 use std::time::SystemTime;
 
 use super::callable::PlatformFunc;
+use super::interpreter::Environment;
 use super::interpreter::{Interpreter, RuntimeError, Value};
 
 fn clock_impl(_interperter: &mut Interpreter, _args: Vec<Value>) -> Result<Value, RuntimeError> {
@@ -31,9 +31,9 @@ fn parse_num_impl(_interperter: &mut Interpreter, args: Vec<Value>) -> Result<Va
     }
 }
 
-pub fn populate_builtin(global_env: &mut HashMap<String, Option<Value>>) {
-    global_env.insert(
-        "clock".to_string(),
+pub fn populate_builtin(global_env: &mut Environment) {
+    global_env.bind(
+        "clock",
         Some(Value::Callable(Rc::new(PlatformFunc {
             name: "clock",
             arity: 0,
@@ -41,8 +41,8 @@ pub fn populate_builtin(global_env: &mut HashMap<String, Option<Value>>) {
         }))),
     );
 
-    global_env.insert(
-        "read_stdin".to_string(),
+    global_env.bind(
+        "read_stdin",
         Some(Value::Callable(Rc::new(PlatformFunc {
             name: "read_stdin",
             arity: 0,
@@ -50,8 +50,8 @@ pub fn populate_builtin(global_env: &mut HashMap<String, Option<Value>>) {
         }))),
     );
 
-    global_env.insert(
-        "parse_num".to_string(),
+    global_env.bind(
+        "parse_num",
         Some(Value::Callable(Rc::new(PlatformFunc {
             name: "parse_num",
             arity: 1,
