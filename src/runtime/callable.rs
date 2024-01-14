@@ -53,7 +53,8 @@ impl Callable for HostedFunc {
         let result = interpreter.execute(&self.body);
         interpreter.end_scope();
         match result {
-            Ok(result) => Ok(result),
+            Ok(_) => Ok(Value::Nil),
+            Err(UnwindCause::Return(v)) => Ok(v),
             Err(UnwindCause::Break) => Err(RuntimeError::InvalidBreak),
             Err(UnwindCause::Error(error)) => Err(error),
         }

@@ -37,6 +37,9 @@ pub enum Stmt {
         body: Box<Stmt>,
     },
     Break,
+    Return {
+        expr: Option<Expr>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -431,6 +434,18 @@ where
         for_stmt(reporter, scanner)
     } else if scanner.next_if(|next| *next == Keyword::Print).is_some() {
         print_stmt(reporter, scanner)
+    } else if scanner.next_if(|next| *next == Keyword::Return).is_some() {
+        let expr = if scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
+            None
+        } else {
+            let e = expr(reporter, scanner)?;
+            if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
+                reporter.report(pos, "expected ';' after statement");
+                return Err(ParsePanic {});
+            }
+            Some(e)
+        };
+        Ok(Stmt::Return { expr })
     } else if scanner.next_if(|next| *next == Keyword::Break).is_some() {
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
             reporter.report(pos, "expected ';' after break");

@@ -36,6 +36,7 @@ pub enum RuntimeError {
 
 pub enum UnwindCause {
     Error(RuntimeError),
+    Return(Value),
     Break,
 }
 
@@ -197,19 +198,23 @@ impl Interpreter {
 
     pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
         for stmt in expr.0 {
-            self.execute(&stmt).map_err(|err| match err {
-                UnwindCause::Break => RuntimeError::InvalidBreak,
-                UnwindCause::Error(err) => err,
-            })?;
+            match self.execute(&stmt) {
+                Ok(_) => {}
+                Err(UnwindCause::Break) => return Err(RuntimeError::InvalidBreak),
+                Err(UnwindCause::Error(err)) => return Err(err),
+                Err(UnwindCause::Return(_)) => return Ok(()),
+            };
         }
         Ok(())
     }
 
     pub fn interpret_one(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
-        self.execute(stmt).map_err(|err| match err {
-            UnwindCause::Break => RuntimeError::InvalidBreak,
-            UnwindCause::Error(err) => err,
-        })
+        match self.execute(stmt) {
+            Ok(v) => Ok(v),
+            Err(UnwindCause::Break) => Err(RuntimeError::InvalidBreak),
+            Err(UnwindCause::Return(v)) => Ok(v),
+            Err(UnwindCause::Error(err)) => Err(err),
+        }
     }
 
     pub fn begin_scope(&mut self) {
@@ -317,6 +322,14 @@ impl Interpreter {
                         .insert(name.clone(), Some(Value::Callable(Rc::new(func))));
                 }
                 Ok(Value::Nil)
+            }
+            Stmt::Return { expr } => {
+                let v = if let Some(expr) = expr {
+                    self.eval(expr)?
+                } else {
+                    Value::Nil
+                };
+                return Err(UnwindCause::Return(v));
             }
         }
     }
