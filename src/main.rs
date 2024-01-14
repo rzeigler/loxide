@@ -76,7 +76,7 @@ fn run(interpreter: &mut Interpreter, code: &str, in_repl: bool) {
             if in_repl && program.0.len() == 1 {
                 match interpreter.interpret_one(&program.0[0]) {
                     Ok(Value::Nil) => {}
-                    Ok(v) => println!("{}", v),
+                    Ok(v) => println!("{}", v.to_string()),
                     Err(e) => eprintln!("{}", e),
                 }
             } else {

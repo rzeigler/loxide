@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    fmt::{Debug, Display},
+    fmt::Debug,
     io::{self},
     num::ParseFloatError,
     ops::{Add, Div, Mul, Sub},
@@ -9,7 +9,7 @@ use std::{
 
 use thiserror::Error;
 
-use super::callable::Callable;
+use super::callable::{Callable, HostedFunc};
 use crate::parser::{BinaryOp, Expr, Literal, LogicalOp, Program, Stmt, UnaryOp};
 
 #[derive(Error, Debug)]
@@ -77,14 +77,26 @@ impl Debug for Value {
     }
 }
 
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+// impl Display for Value {
+//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+//         match self {
+//             Value::String(s) => write!(f, "'{}'", s),
+//             Value::Number(n) => write!(f, "{}", n),
+//             Value::Bool(b) => write!(f, "{}", b),
+//             Value::Nil => f.write_str("nil"),
+//             Value::Callable(func) => write!(f, "{}", func.name()),
+//         }
+//     }
+// }
+
+impl ToString for Value {
+    fn to_string(&self) -> String {
         match self {
-            Value::String(s) => write!(f, "'{}'", s),
-            Value::Number(n) => write!(f, "{}", n),
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Nil => f.write_str("nil"),
-            Value::Callable(func) => write!(f, "{}", func.name()),
+            Value::String(s) => s.to_owned().as_ref().to_string(),
+            Value::Number(n) => n.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::Nil => "nil".to_owned(),
+            Value::Callable(func) => format!("[fn {}]", func.name()),
         }
     }
 }
@@ -200,7 +212,24 @@ impl Interpreter {
         })
     }
 
-    fn execute(&mut self, stmt: &Stmt) -> Result<Value, UnwindCause> {
+    pub fn begin_scope(&mut self) {
+        self.context_envs.push(HashMap::new());
+    }
+
+    pub fn end_scope(&mut self) {
+        self.context_envs.pop();
+    }
+
+    pub fn define_in_current_scope(&mut self, name: &str, value: Option<Value>) {
+        let scope = if let Some(scope) = self.context_envs.last_mut() {
+            scope
+        } else {
+            &mut self.global_env
+        };
+        scope.insert(name.to_string(), value);
+    }
+
+    pub fn execute(&mut self, stmt: &Stmt) -> Result<Value, UnwindCause> {
         match stmt {
             Stmt::VarDecl { identifier, init } => {
                 if let Some(expr) = init {
@@ -222,14 +251,14 @@ impl Interpreter {
                 }
             }
             Stmt::Print(expr) => {
-                println!("{}", self.eval(expr)?);
+                println!("{}", self.eval(expr)?.to_string());
                 Ok(Value::Nil)
             }
             Stmt::Expr(expr) => self.eval(expr),
             Stmt::Block(stmts) => {
-                self.context_envs.push(HashMap::new());
+                self.begin_scope();
                 let result = self.execute_block(stmts);
-                self.context_envs.pop();
+                self.end_scope();
                 if let Err(e) = result {
                     return Err(e);
                 }
@@ -274,7 +303,21 @@ impl Interpreter {
                 name,
                 parameters,
                 body,
-            } => todo!(),
+            } => {
+                let func = HostedFunc {
+                    name: name.clone(),
+                    parameters: parameters.clone(),
+                    body: body.as_ref().clone(),
+                };
+                // Bind the function value in the top-most context
+                if let Some(local_scope) = self.context_envs.last_mut() {
+                    local_scope.insert(name.clone(), Some(Value::Callable(Rc::new(func))));
+                } else {
+                    self.global_env
+                        .insert(name.clone(), Some(Value::Callable(Rc::new(func))));
+                }
+                Ok(Value::Nil)
+            }
         }
     }
 

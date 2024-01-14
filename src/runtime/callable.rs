@@ -1,4 +1,5 @@
-use super::interpreter::{Interpreter, RuntimeError, Value};
+use super::interpreter::{Interpreter, RuntimeError, UnwindCause, Value};
+use crate::parser::Stmt;
 
 pub trait Callable {
     fn name(&self) -> &str;
@@ -30,7 +31,8 @@ impl Callable for PlatformFunc {
 #[derive(Debug, Clone, PartialEq)]
 pub struct HostedFunc {
     pub name: String,
-    pub params: Vec<String>,
+    pub parameters: Vec<String>,
+    pub body: Stmt,
 }
 
 impl Callable for HostedFunc {
@@ -39,14 +41,21 @@ impl Callable for HostedFunc {
     }
 
     fn arity(&self) -> u8 {
-        todo!()
+        self.parameters.len().try_into().unwrap()
     }
 
-    fn call(
-        &self,
-        _interpreter: &mut Interpreter,
-        _args: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
-        todo!()
+    fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError> {
+        assert_eq!(self.parameters.len(), args.len());
+        interpreter.begin_scope();
+        for (parameter, value) in self.parameters.iter().zip(args.into_iter()) {
+            interpreter.define_in_current_scope(&parameter, Some(value));
+        }
+        let result = interpreter.execute(&self.body);
+        interpreter.end_scope();
+        match result {
+            Ok(result) => Ok(result),
+            Err(UnwindCause::Break) => Err(RuntimeError::InvalidBreak),
+            Err(UnwindCause::Error(error)) => Err(error),
+        }
     }
 }

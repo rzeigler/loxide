@@ -13,7 +13,7 @@ use thiserror::Error;
 #[derive(Debug, PartialEq, Eq)]
 pub struct Program(pub Vec<Stmt>);
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stmt {
     VarDecl {
         identifier: String,
@@ -404,7 +404,11 @@ where
             return Err(ParsePanic {});
         }
     }
-    let body = Box::new(block(reporter, scanner)?);
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftBrace) {
+        reporter.report(pos, "function bodies start with '{'");
+        return Err(ParsePanic {});
+    }
+    let body = Box::new(finish_block(reporter, scanner)?);
     Ok(Stmt::FunDecl {
         name,
         parameters,
@@ -434,13 +438,13 @@ where
         }
         Ok(Stmt::Break)
     } else if scanner.next_if(|next| *next == Symbol::LeftBrace).is_some() {
-        block(reporter, scanner)
+        finish_block(reporter, scanner)
     } else {
         expr_stmt(reporter, scanner)
     }
 }
 
-fn block<'arena, 'src, Reporter>(
+fn finish_block<'arena, 'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -825,7 +829,7 @@ where
         }
         // Note: we only need to consume the trailing ) if we didn't consume it in the has args branch
         if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
-            reporter.report(pos, "Expect ')' after arguments");
+            reporter.report(pos, "expect ')' after arguments");
             return Err(ParsePanic {});
         }
     }
@@ -1040,7 +1044,7 @@ where
     Reporter: ErrorReporter,
 {
     idents.push(expect_identifier(reporter, scanner)?.to_string());
-    while scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
+    while scanner.next_if(|next| *next == Symbol::Comma).is_some() {
         idents.push(expect_identifier(reporter, scanner)?.to_string());
     }
 
@@ -1049,6 +1053,8 @@ where
 
 #[cfg(test)]
 mod test {
+    use std::io::stderr;
+
     use super::*;
 
     #[test]
@@ -1081,6 +1087,20 @@ mod test {
             &mut TestErrorReporter {},
             Scanner::new("print print_num(\"12.3\");"),
         );
+        program.unwrap();
+    }
+
+    #[test]
+    fn test_fun_define() {
+        let code = "fun add(a, b) {
+            print a + b;
+        }
+
+        add(1, 2);
+        ";
+        let mut stderr = stderr().lock();
+        let mut error = WriteErrorReporter::new(&mut stderr);
+        let program = parse(&mut error, Scanner::new(code));
         program.unwrap();
     }
 }
