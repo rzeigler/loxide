@@ -12,6 +12,7 @@ use anyhow::{Context, Result};
 
 use bumpalo::Bump;
 use parser::parse;
+use runtime::stock_interpreter;
 use runtime::Interpreter;
 use runtime::Value;
 use scanner::Scanner;
@@ -33,7 +34,7 @@ fn main() -> Result<()> {
         let mut script = String::new();
         file.read_to_string(&mut script)
             .context("Unable to read script file")?;
-        run(&mut Interpreter::new(), &script, false);
+        run(&mut stock_interpreter(), &script, false);
     } else {
         run_prompt()?;
     }
@@ -44,7 +45,7 @@ fn run_prompt() -> Result<()> {
     let stdin = std::io::stdin().lock();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
-    let mut interpreter = Interpreter::new();
+    let mut interpreter = stock_interpreter();
     loop {
         {
             let mut stdout = stdout().lock();

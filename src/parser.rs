@@ -22,6 +22,11 @@ pub enum Stmt<'a> {
         identifier: &'a str,
         init: Option<&'a Expr<'a>>,
     },
+    FunDecl {
+        name: &'a str,
+        parameters: Vec<'a, &'a str>,
+        body: &'a Stmt<'a>,
+    },
     Expr(&'a Expr<'a>),
     Print(&'a Expr<'a>),
     Block(Vec<'a, &'a Stmt<'a>>),
@@ -194,7 +199,7 @@ pub trait ErrorReporter {
 struct TestErrorReporter;
 
 impl ErrorReporter for TestErrorReporter {
-    fn report(&mut self, pos: Pos, message: &str) {}
+    fn report(&mut self, _pos: Pos, _message: &str) {}
 }
 
 pub struct WriteErrorReporter<'w, W>
@@ -334,39 +339,85 @@ where
     Reporter: ErrorReporter,
 {
     if scanner.next_if(|data| *data == Keyword::Var).is_some() {
-        let identifier = {
-            match scanner.next() {
-                Ok(Token {
-                    data: TokenType::Identifier(identifier),
-                    pos: _,
-                }) => arena.alloc_str(identifier), // Copy into the AST arena
-                Ok(token) => {
-                    reporter.report(token.pos, "expected an identifier");
-                    return Err(ParsePanic {});
-                }
-                Err(err) => {
-                    reporter.report(err.pos, "expected an identifier");
-                    return Err(ParsePanic {});
-                }
-            }
-        };
-        let initializer = if scanner.next_if(|next| *next == Symbol::Equal).is_some() {
-            Some(expr(arena, reporter, scanner)?)
-        } else {
-            // Generate a synthetic initializer as the constant null
-            None
-        };
-        if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
-            reporter.report(pos, "expected ';' after an expression");
-            return Err(ParsePanic {});
-        }
-        Ok(arena.alloc(Stmt::VarDecl {
-            identifier,
-            init: initializer,
-        }))
+        finish_var_decl(arena, reporter, scanner)
+    } else if scanner.next_if(|data| *data == Keyword::Fun).is_some() {
+        finish_fun_decl(arena, reporter, scanner)
     } else {
         statement(arena, reporter, scanner)
     }
+}
+
+fn finish_var_decl<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    let identifier = {
+        match scanner.next() {
+            Ok(Token {
+                data: TokenType::Identifier(identifier),
+                pos: _,
+            }) => arena.alloc_str(identifier), // Copy into the AST arena
+            Ok(token) => {
+                reporter.report(token.pos, "expected an identifier");
+                return Err(ParsePanic {});
+            }
+            Err(err) => {
+                reporter.report(err.pos, "expected an identifier");
+                return Err(ParsePanic {});
+            }
+        }
+    };
+    let initializer = if scanner.next_if(|next| *next == Symbol::Equal).is_some() {
+        Some(expr(arena, reporter, scanner)?)
+    } else {
+        // Generate a synthetic initializer as the constant null
+        None
+    };
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
+        reporter.report(pos, "expected ';' after an expression");
+        return Err(ParsePanic {});
+    }
+    Ok(arena.alloc(Stmt::VarDecl {
+        identifier,
+        init: initializer,
+    }))
+}
+
+fn finish_fun_decl<'arena, 'src, Reporter>(
+    arena: &'arena Bump,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<&'arena Stmt<'arena>, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    let name = arena.alloc_str(expect_identifier(reporter, scanner)?);
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftParen) {
+        reporter.report(pos, "expected '(' after function name");
+        return Err(ParsePanic {});
+    }
+
+    let mut parameters = Vec::new_in(arena);
+    if scanner
+        .next_if(|next| *next == Symbol::RightParen)
+        .is_none()
+    {
+        comma_separated_identifiers(&mut parameters, reporter, scanner)?;
+        if let Err(pos) = expect_next_symbol(scanner, Symbol::RightParen) {
+            reporter.report(pos, "expect ')' after argument list");
+            return Err(ParsePanic {});
+        }
+    }
+    let body = block(arena, reporter, scanner)?;
+    Ok(arena.alloc(Stmt::FunDecl {
+        name,
+        parameters,
+        body,
+    }))
 }
 
 fn statement<'arena, 'src, Reporter>(
@@ -995,6 +1046,29 @@ fn expect_next_symbol(scanner: &mut Scanner, symbol: Symbol) -> Result<(), Pos> 
     }
 }
 
+fn expect_identifier<'code, Reporter>(
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'code>,
+) -> Result<&'code str, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    match scanner.next() {
+        Ok(Token {
+            data: TokenType::Identifier(ident),
+            pos: _,
+        }) => Ok(ident),
+        Ok(Token { data: _, pos }) => {
+            reporter.report(pos, "expected identifier");
+            return Err(ParsePanic {});
+        }
+        Err(error) => {
+            reporter.report(error.pos, "expected identifier");
+            return Err(ParsePanic {});
+        }
+    }
+}
+
 // Helper to determine if a scanner result matches a specific input
 fn peek_matches<'code, A>(scanner: &mut Scanner<'code>, rhs: A) -> bool
 where
@@ -1004,6 +1078,29 @@ where
         Ok(token) => token.data == rhs,
         _ => false,
     }
+}
+
+fn comma_separated_identifiers<'arena, 'src, Reporter>(
+    idents: &mut Vec<'arena, &'arena str>,
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<(), ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    let first = idents
+        .bump()
+        .alloc_str(expect_identifier(reporter, scanner)?);
+    idents.push(first);
+
+    while scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
+        let id = idents
+            .bump()
+            .alloc_str(expect_identifier(reporter, scanner)?);
+        idents.push(id);
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1034,7 +1131,7 @@ mod test {
     #[test]
     fn test_parse_call() {
         let arena = Bump::new();
-        let program = parse(
+        _ = parse(
             &arena,
             &mut TestErrorReporter {},
             Scanner::new("print clock();"),

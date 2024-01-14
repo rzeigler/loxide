@@ -1,15 +1,15 @@
 use std::{
     collections::HashMap,
     fmt::{Debug, Display},
-    io::{self, stdin, Read},
+    io::{self},
     num::ParseFloatError,
     ops::{Add, Div, Mul, Sub},
     rc::Rc,
-    time::SystemTime,
 };
 
 use thiserror::Error;
 
+use super::callable::Callable;
 use crate::parser::{BinaryOp, Expr, Literal, LogicalOp, Program, Stmt, UnaryOp};
 
 #[derive(Error, Debug)]
@@ -39,12 +39,12 @@ pub enum UnwindCause {
     Break,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub enum Value {
     String(Rc<String>),
     Number(f64),
     Bool(bool),
-    Callable(Builtin),
+    Callable(Rc<dyn Callable>),
     Nil,
 }
 
@@ -59,8 +59,20 @@ impl Value {
 
     fn to_callable(&self) -> Option<&dyn Callable> {
         match self {
-            Self::Callable(builtin) => Some(builtin),
+            Self::Callable(callable) => Some(callable.as_ref()),
             _ => None,
+        }
+    }
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::String(s) => write!(f, "Value::String('{}')", s),
+            Value::Number(n) => write!(f, "Value::Number({})", n),
+            Value::Bool(b) => write!(f, "Value::Bool({})", b),
+            Value::Nil => f.write_str("Value::Nil"),
+            Value::Callable(func) => write!(f, "Value::Callable({})", func.name()),
         }
     }
 }
@@ -72,30 +84,22 @@ impl Display for Value {
             Value::Number(n) => write!(f, "{}", n),
             Value::Bool(b) => write!(f, "{}", b),
             Value::Nil => f.write_str("nil"),
-            Value::Callable(func) => write!(f, "{}", func.name),
+            Value::Callable(func) => write!(f, "{}", func.name()),
         }
     }
 }
 
-trait Callable {
-    fn arity(&self) -> u8;
-    fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError>;
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Builtin {
-    name: &'static str,
-    arity: u8,
-    call: fn(&mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError>,
-}
-
-impl Callable for Builtin {
-    fn arity(&self) -> u8 {
-        self.arity
-    }
-
-    fn call(&self, interperter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError> {
-        (self.call)(interperter, args)
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::String(left), Self::String(right)) => left == right,
+            (Self::Number(left), Self::Number(right)) => left == right,
+            (Self::Bool(left), Self::Bool(right)) => left == right,
+            (Self::Nil, Self::Nil) => true,
+            // Maybe these should check or something
+            (Self::Callable(_), Self::Callable(_)) => false,
+            _ => false,
+        }
     }
 }
 
@@ -165,124 +169,67 @@ impl Sub for Value {
 
 type Environment = HashMap<String, Option<Value>>;
 
-fn clock_impl(_interperter: &mut Interpreter, _args: Vec<Value>) -> Result<Value, RuntimeError> {
-    let duration = SystemTime::UNIX_EPOCH.elapsed().unwrap();
-    Ok(Value::Number(duration.as_secs_f64()))
-}
-
-fn read_stdin_impl(
-    _interperter: &mut Interpreter,
-    _args: Vec<Value>,
-) -> Result<Value, RuntimeError> {
-    let mut result = String::new();
-    _ = stdin().read_to_string(&mut result)?;
-    Ok(Value::String(Rc::new(result)))
-}
-
-fn parse_num_impl(_interperter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError> {
-    match &args[0] {
-        Value::String(str) => {
-            let f = str.parse::<f64>()?;
-            Ok(Value::Number(f))
-        }
-        _ => Err(RuntimeError::TypeError),
-    }
-}
-
 pub struct Interpreter {
     // None indicates that the variable is defined by not yet initialized
-    global_memory: Environment,
+    global_env: Environment,
+    context_envs: Vec<Environment>,
 }
 
 impl Interpreter {
-    pub fn new() -> Interpreter {
-        let mut global_memory = Environment::new();
-
-        global_memory.insert(
-            "clock".to_string(),
-            Some(Value::Callable(Builtin {
-                name: "clock",
-                arity: 0,
-                call: clock_impl,
-            })),
-        );
-
-        global_memory.insert(
-            "read_stdin".to_string(),
-            Some(Value::Callable(Builtin {
-                name: "read_stdin",
-                arity: 0,
-                call: read_stdin_impl,
-            })),
-        );
-
-        global_memory.insert(
-            "parse_num".to_string(),
-            Some(Value::Callable(Builtin {
-                name: "parse_num",
-                arity: 1,
-                call: parse_num_impl,
-            })),
-        );
-
-        Interpreter { global_memory }
+    pub fn new_with_global(global_env: Environment) -> Interpreter {
+        Interpreter {
+            global_env,
+            context_envs: Vec::new(),
+        }
     }
 
     pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
-        let mut context_stack = Vec::<Environment>::new();
         for stmt in expr.0 {
-            self.execute(&mut context_stack, stmt)
-                .map_err(|err| match err {
-                    UnwindCause::Break => RuntimeError::InvalidBreak,
-                    UnwindCause::Error(err) => err,
-                })?;
+            self.execute(stmt).map_err(|err| match err {
+                UnwindCause::Break => RuntimeError::InvalidBreak,
+                UnwindCause::Error(err) => err,
+            })?;
         }
         Ok(())
     }
 
     pub fn interpret_one(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
-        let mut context_stack = Vec::<Environment>::new();
-        self.execute(&mut context_stack, stmt)
-            .map_err(|err| match err {
-                UnwindCause::Break => RuntimeError::InvalidBreak,
-                UnwindCause::Error(err) => err,
-            })
+        self.execute(stmt).map_err(|err| match err {
+            UnwindCause::Break => RuntimeError::InvalidBreak,
+            UnwindCause::Error(err) => err,
+        })
     }
 
-    fn execute(
-        &mut self,
-        context_stack: &mut Vec<Environment>,
-        stmt: &Stmt,
-    ) -> Result<Value, UnwindCause> {
+    fn execute(&mut self, stmt: &Stmt) -> Result<Value, UnwindCause> {
         match stmt {
             Stmt::VarDecl { identifier, init } => {
                 if let Some(expr) = init {
-                    let v = self.eval(context_stack, expr)?;
-                    if let Some(top) = context_stack.last_mut() {
+                    let v = self.eval(expr)?;
+                    if let Some(top) = self.context_envs.last_mut() {
                         top.insert(identifier.to_string(), Some(v.clone()));
                     } else {
-                        self.global_memory
+                        self.global_env
                             .insert(identifier.to_string(), Some(v.clone()));
                     }
                     Ok(v)
                 } else {
-                    if let Some(top) = context_stack.last_mut() {
+                    if let Some(top) = self.context_envs.last_mut() {
                         top.insert(identifier.to_string(), None);
                     } else {
-                        self.global_memory.insert(identifier.to_string(), None);
+                        self.global_env.insert(identifier.to_string(), None);
                     }
                     Ok(Value::Nil)
                 }
             }
             Stmt::Print(expr) => {
-                println!("{}", self.eval(context_stack, expr)?);
+                println!("{}", self.eval(expr)?);
                 Ok(Value::Nil)
             }
-            Stmt::Expr(expr) => self.eval(context_stack, expr),
+            Stmt::Expr(expr) => self.eval(expr),
             Stmt::Block(stmts) => {
-                context_stack.push(HashMap::new());
-                let result = self.execute_block(context_stack, stmts);
-                context_stack.pop();
+                self.context_envs.push(HashMap::new());
+                let result = self.execute_block(stmts);
+                self.context_envs.pop();
                 if let Err(e) = result {
                     return Err(e);
                 }
@@ -293,15 +240,15 @@ impl Interpreter {
                 then: if_true,
                 or_else: if_false,
             } => {
-                let if_value = self.eval(context_stack, test)?;
+                let if_value = self.eval(test)?;
                 match if_value {
                     Value::Bool(true) => {
-                        self.execute(context_stack, &if_true)?;
+                        self.execute(&if_true)?;
                         Ok(Value::Nil)
                     }
                     Value::Bool(false) => {
                         if let Some(false_stmt) = if_false {
-                            self.execute(context_stack, false_stmt)?;
+                            self.execute(false_stmt)?;
                             Ok(Value::Nil)
                         } else {
                             Ok(Value::Nil)
@@ -311,8 +258,8 @@ impl Interpreter {
                 }
             }
             Stmt::Loop { expr, body } => {
-                while self.eval(context_stack, expr)?.to_bool() {
-                    match self.execute(context_stack, &body) {
+                while self.eval(expr)?.to_bool() {
+                    match self.execute(&body) {
                         Err(UnwindCause::Break) => {
                             break;
                         }
@@ -323,40 +270,40 @@ impl Interpreter {
                 Ok(Value::Nil)
             }
             Stmt::Break => Err(UnwindCause::Break),
+            Stmt::FunDecl {
+                name,
+                parameters,
+                body,
+            } => todo!(),
         }
     }
 
     fn execute_block(
         &mut self,
-        context_stack: &mut Vec<Environment>,
         stmts: &bumpalo::collections::Vec<&Stmt>,
     ) -> Result<(), UnwindCause> {
         for stmt in stmts {
-            self.execute(context_stack, stmt)?;
+            self.execute(stmt)?;
         }
         Ok(())
     }
 
-    fn eval(
-        &mut self,
-        context_stack: &mut Vec<Environment>,
-        expr: &Expr,
-    ) -> Result<Value, UnwindCause> {
+    fn eval(&mut self, expr: &Expr) -> Result<Value, UnwindCause> {
         match expr {
             Expr::Ternary {
                 test,
                 if_true,
                 if_false,
             } => {
-                if self.eval(context_stack, test)?.to_bool() {
-                    self.eval(context_stack, if_true)
+                if self.eval(test)?.to_bool() {
+                    self.eval(if_true)
                 } else {
-                    self.eval(context_stack, if_false)
+                    self.eval(if_false)
                 }
             }
             Expr::Binary { left, op, right } => {
-                let lhs = self.eval(context_stack, left)?;
-                let rhs = self.eval(context_stack, right)?;
+                let lhs = self.eval(left)?;
+                let rhs = self.eval(right)?;
                 match op {
                     BinaryOp::Equal => Ok(Value::Bool(eq(lhs, rhs))),
                     BinaryOp::NotEqual => Ok(Value::Bool(!eq(lhs, rhs))),
@@ -376,21 +323,21 @@ impl Interpreter {
                 }
             }
             Expr::Unary { op, expr } => {
-                let val = self.eval(context_stack, expr)?;
+                let val = self.eval(expr)?;
                 match op {
                     UnaryOp::Not => Ok(Value::Bool(!val.to_bool())),
                     UnaryOp::Negative => Value::Number(-1f64) * val,
                 }
             }
-            Expr::Group(expr) => self.eval(context_stack, expr),
+            Expr::Group(expr) => self.eval(expr),
             Expr::Literal(Literal::Number(f)) => Ok(Value::Number(**f)),
             Expr::Literal(Literal::String(s)) => Ok(Value::String(Rc::new(s.to_string()))),
             Expr::Literal(Literal::Boolean(b)) => Ok(Value::Bool(*b)),
             Expr::Literal(Literal::Nil) => Ok(Value::Nil),
-            Expr::Identifier(ident) => self.lookup_value(context_stack, ident),
+            Expr::Identifier(ident) => self.lookup_value(ident),
             Expr::Assignment { target, expr } => {
-                let value = self.eval(context_stack, expr)?;
-                self.assign_value(context_stack, target, value.clone())?;
+                let value = self.eval(expr)?;
+                self.assign_value(target, value.clone())?;
                 Ok(value)
             }
             // We do this to support coallescing like behavior such as javascript has i.e. false || "a" should eval to "a"
@@ -399,9 +346,9 @@ impl Interpreter {
                 op: LogicalOp::And,
                 right,
             } => {
-                let left_val = self.eval(context_stack, left)?;
+                let left_val = self.eval(left)?;
                 if left_val.to_bool() {
-                    self.eval(context_stack, right)
+                    self.eval(right)
                 } else {
                     Ok(left_val)
                 }
@@ -411,18 +358,18 @@ impl Interpreter {
                 op: LogicalOp::Or,
                 right,
             } => {
-                let left_val = self.eval(context_stack, left)?;
+                let left_val = self.eval(left)?;
                 if left_val.to_bool() {
                     Ok(left_val)
                 } else {
-                    self.eval(context_stack, right)
+                    self.eval(right)
                 }
             }
             Expr::Call { callee, arguments } => {
-                let callee = self.eval(context_stack, callee)?;
+                let callee = self.eval(callee)?;
                 let args = arguments
                     .iter()
-                    .map(|expr| self.eval(context_stack, expr))
+                    .map(|expr| self.eval(expr))
                     .collect::<Result<Vec<_>, _>>()?;
                 if let Some(callable) = callee.to_callable() {
                     if args.len() != callable.arity().into() {
@@ -441,12 +388,8 @@ impl Interpreter {
         }
     }
 
-    fn lookup_value(
-        &self,
-        context_stack: &mut Vec<Environment>,
-        identifier: &str,
-    ) -> Result<Value, UnwindCause> {
-        for context in context_stack.iter().rev() {
+    fn lookup_value(&self, identifier: &str) -> Result<Value, UnwindCause> {
+        for context in self.context_envs.iter().rev() {
             if let Some(value) = context.get(identifier) {
                 let v = value.clone().ok_or(UnwindCause::Error(
                     RuntimeError::UninitializedVariable(identifier.to_string()),
@@ -454,7 +397,7 @@ impl Interpreter {
                 return Ok(v);
             }
         }
-        self.global_memory
+        self.global_env
             .get(identifier)
             .cloned()
             .ok_or(UnwindCause::Error(RuntimeError::UnboundVariable(
@@ -467,25 +410,17 @@ impl Interpreter {
             })
     }
 
-    fn assign_value(
-        &mut self,
-        context_stack: &mut Vec<Environment>,
-        target: &str,
-        value: Value,
-    ) -> Result<(), UnwindCause> {
-        for context in context_stack.iter_mut().rev() {
+    fn assign_value(&mut self, target: &str, value: Value) -> Result<(), UnwindCause> {
+        for context in self.context_envs.iter_mut().rev() {
             if let Some(lvalue) = context.get_mut(target) {
                 *lvalue = Some(value);
                 return Ok(());
             }
         }
 
-        let lvalue = self
-            .global_memory
-            .get_mut(target)
-            .ok_or(UnwindCause::Error(RuntimeError::UnboundVariable(
-                target.to_string(),
-            )))?;
+        let lvalue = self.global_env.get_mut(target).ok_or(UnwindCause::Error(
+            RuntimeError::UnboundVariable(target.to_string()),
+        ))?;
         *lvalue = Some(value);
         Ok(())
     }
