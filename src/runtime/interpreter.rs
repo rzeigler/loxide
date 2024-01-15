@@ -11,7 +11,7 @@ use std::{
 use thiserror::Error;
 
 use super::callable::{Callable, HostedFunc};
-use crate::parser::{BinaryOp, Expr, Literal, LogicalOp, Program, Stmt, UnaryOp};
+use crate::ast::{BinaryOp, Expr, Literal, LogicalOp, Program, Stmt, UnaryOp};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -20,7 +20,7 @@ pub enum RuntimeError {
     #[error("type error")]
     TypeError,
     #[error("undefined variable: {0}")]
-    UnboundVariable(String),
+    UndefinedVariable(String),
     #[error("uninitialized variable: {0}")]
     UninitializedVariable(String),
     #[error("break outside of a loop")]
@@ -183,10 +183,6 @@ impl Environment {
     }
 }
 
-#[derive(Error, Debug)]
-#[error("Unbound variable")]
-pub struct UnboundError {}
-
 impl Environment {
     pub fn bind(&self, name: &str, value: Option<Value>) {
         self.bindings.borrow_mut().insert(name.to_string(), value);
@@ -195,24 +191,31 @@ impl Environment {
     /// Lookup a value
     /// The outer Option indicates whether or not the name exists
     /// The inner Option indicates whether the value has been bound
-    pub fn lookup(&self, name: &str) -> Option<Option<Value>> {
-        if let Some(value) = self.bindings.borrow().get(name) {
-            Some(value.to_owned())
-        } else if let Some(parent) = &self.parent {
-            parent.lookup(name)
+    pub fn lookup(&self, name: &str, scope_distance: u32) -> Option<Value> {
+        if scope_distance > 0 {
+            self.parent
+                .as_ref()
+                .expect("variable resolution is broken")
+                .lookup(name, scope_distance - 1)
         } else {
-            None
+            self.bindings
+                .borrow()
+                .get(name)
+                .expect("variable resolution is broken")
+                .clone()
         }
     }
 
-    pub fn assign(&self, name: &str, value: Value) -> Result<(), UnboundError> {
-        if let Some(lvalue) = self.bindings.borrow_mut().get_mut(name) {
-            *lvalue = Some(value);
-            return Ok(());
-        } else if let Some(parent) = &self.parent {
-            return parent.assign(name, value);
+    pub fn assign(&self, name: &str, value: Value, scope_distance: u32) {
+        if scope_distance > 0 {
+            self.parent
+                .as_ref()
+                .expect("variable resolution is broken")
+                .assign(name, value, scope_distance - 1);
         } else {
-            return Err(UnboundError {});
+            self.bindings
+                .borrow_mut()
+                .insert(name.to_string(), Some(value));
         }
     }
 
@@ -244,8 +247,15 @@ impl Interpreter {
         }
     }
 
-    pub fn interpret(&mut self, expr: Program) -> Result<(), RuntimeError> {
-        for stmt in expr.0 {
+    pub fn interpret(&mut self, mut program: Program) -> Result<(), RuntimeError> {
+        let mut resolver = Resolver::new();
+
+        let global = self.environment.bindings.borrow();
+        resolver.define_all(global.keys());
+        resolver.resolve_program(&mut program)?;
+        drop(global);
+
+        for stmt in program.0 {
             match self.execute(&stmt) {
                 Ok(_) => {}
                 Err(UnwindCause::Break) => return Err(RuntimeError::InvalidBreak),
@@ -256,8 +266,15 @@ impl Interpreter {
         Ok(())
     }
 
-    pub fn interpret_one(&mut self, stmt: &Stmt) -> Result<Value, RuntimeError> {
-        match self.execute(stmt) {
+    pub fn interpret_one(&mut self, mut stmt: Stmt) -> Result<Value, RuntimeError> {
+        let mut resolver = Resolver::new();
+
+        let global = self.environment.bindings.borrow();
+        resolver.define_all(global.keys());
+        resolver.resolve_stmt(&mut stmt)?;
+        drop(global);
+
+        match self.execute(&stmt) {
             Ok(v) => Ok(v),
             Err(UnwindCause::Break) => Err(RuntimeError::InvalidBreak),
             Err(UnwindCause::Return(v)) => Ok(v),
@@ -357,7 +374,7 @@ impl Interpreter {
                     .bind(name, Some(Value::Callable(Rc::new(func))));
                 Ok(Value::Nil)
             }
-            Stmt::Return { expr } => {
+            Stmt::Return(expr) => {
                 let v = if let Some(expr) = expr {
                     self.eval(expr)?
                 } else {
@@ -421,25 +438,32 @@ impl Interpreter {
             Expr::Literal(Literal::String(s)) => Ok(Value::String(Rc::new(s.to_string()))),
             Expr::Literal(Literal::Boolean(b)) => Ok(Value::Bool(*b)),
             Expr::Literal(Literal::Nil) => Ok(Value::Nil),
-            Expr::Identifier(ident) => self
+            Expr::Identifier {
+                name,
+                scope_distance,
+            } => self
                 .environment
-                .lookup(ident)
-                // If there is no defined name, the outer option is None
-                .ok_or(RuntimeError::UnboundVariable(ident.to_owned()))
+                .lookup(
+                    name,
+                    // Should be defined if resolution ran correctly
+                    scope_distance.unwrap(),
+                )
                 // If the name was defined, but there is not currently a value, the inner option is None
-                .and_then(|inner_value| {
-                    inner_value.ok_or(RuntimeError::UninitializedVariable(ident.to_owned()))
-                })
+                .ok_or(RuntimeError::UninitializedVariable(name.to_owned()))
                 .map_err(|err| UnwindCause::Error(err)),
-            Expr::Assignment { target, expr } => {
+            Expr::Assignment {
+                target,
+                scope_distance,
+                expr,
+            } => {
                 let value = self.eval(expr)?;
-                if let Err(_) = self.environment.assign(target, value.clone()) {
-                    Err(UnwindCause::Error(RuntimeError::UnboundVariable(
-                        target.to_owned(),
-                    )))
-                } else {
-                    Ok(value)
-                }
+                self.environment.assign(
+                    target,
+                    value.clone(),
+                    // Should be defined if resolution ran correctly
+                    scope_distance.unwrap(),
+                );
+                Ok(value)
             }
             // We do this to support coallescing like behavior such as javascript has i.e. false || "a" should eval to "a"
             Expr::Logical {
@@ -507,5 +531,185 @@ fn lt(lhs: Value, rhs: Value) -> bool {
         (Value::String(l), Value::String(r)) => l < r,
         (Value::Number(l), Value::Number(r)) => l < r,
         _ => false,
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ResolveState {
+    Declared,
+    Defined,
+}
+
+struct Resolver {
+    // We only represent the scopes above global
+    scopes: Vec<HashMap<String, ResolveState>>,
+}
+
+impl Resolver {
+    pub fn new() -> Resolver {
+        Resolver {
+            scopes: vec![HashMap::new()],
+        }
+    }
+
+    /// Add the following bindings to the topmost scope
+    /// This is intended to inform the resolver about platform provided globals
+    pub fn define_all<S>(&mut self, bindings: impl Iterator<Item = S>)
+    where
+        S: AsRef<str>,
+    {
+        for binding in bindings {
+            self.define(binding.as_ref());
+        }
+    }
+
+    pub fn resolve_program(&mut self, program: &mut Program) -> Result<(), RuntimeError> {
+        for stmt in program.0.iter_mut() {
+            self.resolve_stmt(stmt)?;
+        }
+        Ok(())
+    }
+
+    pub fn resolve_stmt(&mut self, stmt: &mut Stmt) -> Result<(), RuntimeError> {
+        match stmt {
+            Stmt::Block(stmts) => {
+                self.begin_scope();
+                for stmt in stmts {
+                    self.resolve_stmt(stmt)?;
+                }
+                self.end_scope();
+                Ok(())
+            }
+            Stmt::Break => Ok(()),
+            Stmt::Expr(expr) => self.resolve_expr(expr),
+            Stmt::FunDecl {
+                name,
+                parameters,
+                body,
+            } => {
+                self.define(name);
+                self.begin_scope();
+                for param in parameters.iter() {
+                    self.define(param);
+                }
+                self.resolve_stmt(body)?;
+                self.end_scope();
+                Ok(())
+            }
+            Stmt::If {
+                expr,
+                then,
+                or_else,
+            } => {
+                self.resolve_expr(expr)?;
+                self.resolve_stmt(then)?;
+                if let Some(then) = or_else {
+                    self.resolve_stmt(then)?;
+                }
+                Ok(())
+            }
+            Stmt::Loop { expr, body } => {
+                self.resolve_expr(expr)?;
+                self.resolve_stmt(body)
+            }
+            Stmt::Print(expr) => self.resolve_expr(expr),
+            Stmt::Return(expr) => {
+                if let Some(ret) = expr {
+                    self.resolve_expr(ret)?;
+                }
+                Ok(())
+            }
+            Stmt::VarDecl { identifier, init } => {
+                self.declare(&identifier);
+                if let Some(init) = init {
+                    self.resolve_expr(init)?;
+                }
+                self.define(&identifier);
+                Ok(())
+            }
+        }
+    }
+
+    fn resolve_expr(&mut self, expr: &mut Expr) -> Result<(), RuntimeError> {
+        match expr {
+            Expr::Assignment {
+                target,
+                expr,
+                scope_distance,
+            } => {
+                *scope_distance = Some(self.resolve_identifier(target)?);
+                self.resolve_expr(expr)
+            }
+            Expr::Binary { left, op: _, right } => {
+                self.resolve_expr(left)?;
+                self.resolve_expr(right)
+            }
+            Expr::Call { callee, arguments } => {
+                self.resolve_expr(callee)?;
+                for arg in arguments.iter_mut() {
+                    self.resolve_expr(arg)?;
+                }
+                Ok(())
+            }
+            Expr::Group(expr) => self.resolve_expr(expr),
+            Expr::Identifier {
+                name,
+                scope_distance,
+            } => {
+                *scope_distance = Some(self.resolve_identifier(name)?);
+                Ok(())
+            }
+            Expr::Ternary {
+                test,
+                if_true,
+                if_false,
+            } => {
+                self.resolve_expr(test)?;
+                self.resolve_expr(if_true)?;
+                self.resolve_expr(if_false)
+            }
+            Expr::Unary { op: _, expr } => self.resolve_expr(expr),
+            Expr::Literal(_) => Ok(()),
+            Expr::Logical { left, op: _, right } => {
+                self.resolve_expr(left)?;
+                self.resolve_expr(right)
+            }
+        }
+    }
+
+    fn resolve_identifier(&self, name: &str) -> Result<u32, RuntimeError> {
+        for (i, scope) in self.scopes.iter().rev().enumerate() {
+            if let Some(state) = scope.get(name) {
+                if *state == ResolveState::Defined {
+                    return Ok(i.try_into().unwrap());
+                }
+            }
+        }
+        Err(RuntimeError::UndefinedVariable(name.to_string()))
+    }
+
+    fn declare(&mut self, name: &str) {
+        self.scopes
+            .last_mut()
+            // Per new there should always be at least 1
+            .unwrap()
+            .insert(name.to_string(), ResolveState::Declared);
+    }
+
+    fn define(&mut self, name: &str) {
+        // Define just inserts the value, this allows us to directly define things
+        self.scopes
+            .last_mut()
+            // Per new there should always be at least 1
+            .unwrap()
+            .insert(name.to_string(), ResolveState::Defined);
+    }
+
+    fn begin_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn end_scope(&mut self) {
+        self.scopes.pop();
     }
 }

@@ -1,3 +1,4 @@
+mod ast;
 mod parser;
 mod runtime;
 mod scanner;
@@ -74,7 +75,8 @@ fn run(interpreter: &mut Interpreter, code: &str, in_repl: bool) {
     match parse(&mut reporter, Scanner::new(code)) {
         Ok(program) => {
             if in_repl && program.0.len() == 1 {
-                match interpreter.interpret_one(&program.0[0]) {
+                let first = program.0.into_iter().next().unwrap();
+                match interpreter.interpret_one(first) {
                     Ok(Value::Nil) => {}
                     Ok(v) => println!("{}", v.to_string()),
                     Err(e) => eprintln!("{}", e),

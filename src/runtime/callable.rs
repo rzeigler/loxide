@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
 use super::interpreter::{Environment, Interpreter, RuntimeError, UnwindCause, Value};
-use crate::parser::Stmt;
+use crate::ast::Stmt;
 
 pub trait Callable {
     fn name(&self) -> &str;

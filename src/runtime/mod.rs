@@ -2,8 +2,6 @@ mod builtin;
 mod callable;
 mod interpreter;
 
-use std::collections::HashMap;
-
 pub use builtin::populate_builtin;
 pub use interpreter::{Interpreter, Value};
 

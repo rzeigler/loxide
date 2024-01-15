@@ -1,6 +1,6 @@
-use std::fmt::Display;
 use std::io::Write;
 
+use crate::ast::*;
 use crate::scanner::Keyword;
 use crate::scanner::Pos;
 use crate::scanner::Scanner;
@@ -9,178 +9,6 @@ use crate::scanner::Token;
 use crate::scanner::TokenType;
 use ordered_float::OrderedFloat;
 use thiserror::Error;
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct Program(pub Vec<Stmt>);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Stmt {
-    VarDecl {
-        identifier: String,
-        init: Option<Expr>,
-    },
-    FunDecl {
-        name: String,
-        parameters: Vec<String>,
-        body: Box<Stmt>,
-    },
-    Expr(Expr),
-    Print(Expr),
-    Block(Vec<Stmt>),
-    If {
-        expr: Expr,
-        then: Box<Stmt>,
-        or_else: Option<Box<Stmt>>,
-    },
-    Loop {
-        expr: Expr,
-        body: Box<Stmt>,
-    },
-    Break,
-    Return {
-        expr: Option<Expr>,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Expr {
-    Ternary {
-        test: Box<Expr>,
-        if_true: Box<Expr>,
-        if_false: Box<Expr>,
-    },
-    Binary {
-        left: Box<Expr>,
-        op: BinaryOp,
-        right: Box<Expr>,
-    },
-    Unary {
-        op: UnaryOp,
-        expr: Box<Expr>,
-    },
-    Group(Box<Expr>),
-    Literal(Literal),
-    Identifier(String),
-    Assignment {
-        target: String,
-        expr: Box<Expr>,
-    },
-    Logical {
-        left: Box<Expr>,
-        op: LogicalOp,
-        right: Box<Expr>,
-    },
-    Call {
-        callee: Box<Expr>,
-        arguments: Vec<Expr>,
-    },
-}
-
-impl<'a> Display for Expr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Expr::Literal(lit) => write!(f, "{}", lit),
-            Expr::Group(expr) => write!(f, "(group {})", expr),
-            Expr::Unary { op, expr } => write!(f, "({} {})", op, expr),
-            Expr::Binary { left, op, right } => write!(f, "({} {} {})", op, left, right),
-            Expr::Ternary {
-                test,
-                if_true,
-                if_false,
-            } => write!(f, "(? {} : {} {})", test, if_true, if_false),
-            Expr::Identifier(id) => write!(f, "(ident {})", id),
-            Expr::Assignment { target, expr } => write!(f, "(= {} {})", target, expr),
-            Expr::Logical { left, op, right } => write!(f, "({} {} {})", op, left, right),
-            Expr::Call { callee, arguments } => {
-                write!(f, "(call {}", callee)?;
-                for arg in arguments {
-                    write!(f, " {}", arg)?;
-                }
-                f.write_str(")")
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BinaryOp {
-    Equal,
-    NotEqual,
-    LessThan,
-    LessThanEqual,
-    GreaterThan,
-    GreaterThanEqual,
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-}
-
-impl Display for BinaryOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            BinaryOp::Equal => f.write_str("=="),
-            BinaryOp::NotEqual => f.write_str("!="),
-            BinaryOp::LessThan => f.write_str("<"),
-            BinaryOp::LessThanEqual => f.write_str("<="),
-            BinaryOp::GreaterThan => f.write_str(">"),
-            BinaryOp::GreaterThanEqual => f.write_str(">="),
-            BinaryOp::Add => f.write_str("+"),
-            BinaryOp::Subtract => f.write_str("-"),
-            BinaryOp::Multiply => f.write_str("*"),
-            BinaryOp::Divide => f.write_str("/"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum UnaryOp {
-    Not,
-    Negative,
-}
-
-impl Display for UnaryOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            UnaryOp::Not => f.write_str("!"),
-            UnaryOp::Negative => f.write_str("-"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LogicalOp {
-    And,
-    Or,
-}
-
-impl Display for LogicalOp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            LogicalOp::And => f.write_str("and"),
-            LogicalOp::Or => f.write_str("or"),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Literal {
-    Number(OrderedFloat<f64>),
-    String(String),
-    Boolean(bool),
-    Nil,
-}
-
-impl<'a> Display for Literal {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Literal::Number(OrderedFloat(dbl)) => write!(f, "{}", dbl),
-            Literal::String(s) => f.write_str(s),
-            Literal::Boolean(b) => write!(f, "{}", b),
-            Literal::Nil => f.write_str("nil"),
-        }
-    }
-}
 
 // Public error type that is returned from the API
 #[derive(Error, Debug)]
@@ -445,7 +273,7 @@ where
             }
             Some(e)
         };
-        Ok(Stmt::Return { expr })
+        Ok(Stmt::Return(expr))
     } else if scanner.next_if(|next| *next == Keyword::Break).is_some() {
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
             reporter.report(pos, "expected ';' after break");
@@ -645,8 +473,12 @@ where
         let rhs = Box::new(logical_or(reporter, scanner)?);
         match expr {
             // A valid assignment target
-            Expr::Identifier(name) => Ok(Expr::Assignment {
+            Expr::Identifier {
+                name,
+                scope_distance: _,
+            } => Ok(Expr::Assignment {
                 target: name,
+                scope_distance: None,
                 expr: rhs,
             }),
             // Not a valid assignment target
@@ -890,7 +722,10 @@ where
                         }
                     }
                 }
-                TokenType::Identifier(ident) => Expr::Identifier(ident.to_string()),
+                TokenType::Identifier(ident) => Expr::Identifier {
+                    name: ident.to_string(),
+                    scope_distance: None,
+                },
                 // An unexpected binary symbol so lets try and parse the rhs before raising the error
                 // - should be trapped by unary
                 TokenType::Symbol(symbol)
