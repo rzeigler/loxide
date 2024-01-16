@@ -768,6 +768,11 @@ where
                     name: ident.to_string(),
                     scope_distance: None,
                 },
+                // Just tread this as though it were an identifier
+                TokenType::Keyword(Keyword::This) => Expr::Identifier {
+                    name: "this".to_string(),
+                    scope_distance: None,
+                },
                 // An unexpected binary symbol so lets try and parse the rhs before raising the error
                 // - should be trapped by unary
                 TokenType::Symbol(symbol)
@@ -779,10 +784,10 @@ where
                     let _rhs = expr(reporter, scanner);
                     return Err(ParsePanic {});
                 }
-                _ => {
+                data => {
                     reporter.report(
                         token.pos,
-                        "unexpected token: expected true, false, nil, number, string or (",
+                        &format!("unexpected token: expected true, false, nil, number, string or '(', found {:?}", data)
                     );
                     return Err(ParsePanic {});
                 }
@@ -990,6 +995,22 @@ mod test {
 
         add(1, 2);
         ";
+        let mut stderr = stderr().lock();
+        let mut error = WriteErrorReporter::new(&mut stderr);
+        let program = parse(&mut error, Scanner::new(code));
+        program.unwrap();
+    }
+
+    #[test]
+    fn test_class() {
+        let code = r#"
+class Cake {
+    taste() {
+        var adjective = "delicious";
+        print "The " + this.flavor + " cake is " + adjective + "!";
+    }
+}
+"#;
         let mut stderr = stderr().lock();
         let mut error = WriteErrorReporter::new(&mut stderr);
         let program = parse(&mut error, Scanner::new(code));

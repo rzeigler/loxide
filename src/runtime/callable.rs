@@ -1,6 +1,6 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use super::interpreter::{self, Environment, Interpreter, RuntimeError, UnwindCause, Value};
+use super::interpreter::{Environment, Interpreter, RuntimeError, UnwindCause, Value};
 use crate::ast::{ClassBody, Stmt};
 
 pub trait Callable {
@@ -104,13 +104,13 @@ impl Callable for Class {
         // First, lets take all the methods off the class instance and stuff them into the closure
         let members = Rc::new(RefCell::new(HashMap::new()));
 
+        // Similar to resolver, introduce closure containing the this
         let closure = interpreter.current_env_closure().open_scope();
         let instance = Value::Instance {
             members: members.clone(),
             class: self.inner.clone(),
         };
         closure.bind("this", Some(instance.clone()));
-        // Freeze the closure for now
 
         for method in self.inner.body.methods.iter() {
             members.as_ref().borrow_mut().insert(

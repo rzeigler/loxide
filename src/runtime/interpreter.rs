@@ -238,6 +238,8 @@ impl Environment {
     }
 }
 
+const THIS: &str = "this";
+
 pub struct Interpreter {
     // None indicates that the variable is defined by not yet initialized
     environment: Rc<Environment>,
@@ -677,6 +679,11 @@ impl Resolver {
             }
             Stmt::ClassDecl { name, body } => {
                 self.define(&name);
+                // The class body introduces an implicit scope ...
+                self.begin_scope();
+                // ... which contains this
+                self.define(THIS);
+
                 for method in body.methods.iter_mut() {
                     self.define(&method.name);
                     self.begin_scope();
@@ -686,6 +693,8 @@ impl Resolver {
                     self.resolve_stmt(&mut method.body)?;
                     self.end_scope();
                 }
+
+                self.end_scope();
                 Ok(())
             }
         }
