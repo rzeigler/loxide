@@ -75,7 +75,7 @@ where
     }
 }
 
-pub fn parse<'arena, 'src, Reporter>(
+pub fn parse<'src, Reporter>(
     reporter: &mut Reporter,
     mut scanner: Scanner<'src>,
 ) -> Result<Program, Error>
@@ -117,7 +117,7 @@ where
     }
 }
 
-fn program<'arena, 'src, Reporter>(
+fn program<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Program, ParsePanic>
@@ -156,7 +156,7 @@ fn synchronize(scanner: &mut Scanner) {
     }
 }
 
-fn declaration<'arena, 'src, Reporter>(
+fn declaration<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -167,12 +167,14 @@ where
         finish_var_decl(reporter, scanner)
     } else if scanner.next_if(|data| *data == Keyword::Fun).is_some() {
         finish_fun_decl(reporter, scanner)
+    } else if scanner.next_if(|data| *data == Keyword::Class).is_some() {
+        finish_class_decl(reporter, scanner)
     } else {
         statement(reporter, scanner)
     }
 }
 
-fn finish_var_decl<'arena, 'src, Reporter>(
+fn finish_var_decl<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -206,12 +208,12 @@ where
         return Err(ParsePanic {});
     }
     Ok(Stmt::VarDecl {
-        identifier,
+        name: identifier,
         init: initializer,
     })
 }
 
-fn finish_fun_decl<'arena, 'src, Reporter>(
+fn finish_fun_decl<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -240,14 +242,43 @@ where
         return Err(ParsePanic {});
     }
     let body = Box::new(finish_block(reporter, scanner)?);
-    Ok(Stmt::FunDecl {
+    Ok(Stmt::FunDecl(FunDecl {
         name,
         parameters,
         body,
+    }))
+}
+
+fn finish_class_decl<'src, Reporter>(
+    reporter: &mut Reporter,
+    scanner: &mut Scanner<'src>,
+) -> Result<Stmt, ParsePanic>
+where
+    Reporter: ErrorReporter,
+{
+    let name = expect_identifier(reporter, scanner)?;
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftBrace) {
+        reporter.report(pos, "class bodies start with '{'");
+        return Err(ParsePanic {});
+    }
+    let mut methods = Vec::new();
+    // Class methods don't have fun prefix
+    while scanner
+        .next_if(|next| *next == Symbol::RightBrace)
+        .is_none()
+    {
+        methods.push(match finish_fun_decl(reporter, scanner)? {
+            Stmt::FunDecl(decl) => decl,
+            _ => unreachable!("finish_fun_decl didn't return a FunDecl"),
+        });
+    }
+    Ok(Stmt::ClassDecl {
+        name: name.to_string(),
+        body: ClassBody { methods },
     })
 }
 
-fn statement<'arena, 'src, Reporter>(
+fn statement<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -287,7 +318,7 @@ where
     }
 }
 
-fn finish_block<'arena, 'src, Reporter>(
+fn finish_block<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -306,7 +337,7 @@ where
     Ok(Stmt::Block(stmts))
 }
 
-fn if_stmt<'arena, 'src, Reporter>(
+fn if_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -335,7 +366,7 @@ where
     })
 }
 
-fn while_stmt<'arena, 'src, Reporter>(
+fn while_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -355,7 +386,7 @@ where
     Ok(Stmt::Loop { expr, body })
 }
 
-fn for_stmt<'arena, 'src, Reporter>(
+fn for_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -421,7 +452,7 @@ where
     }
 }
 
-fn print_stmt<'arena, 'src, Reporter>(
+fn print_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -436,7 +467,7 @@ where
     Ok(Stmt::Print(expr))
 }
 
-fn expr_stmt<'arena, 'src, Reporter>(
+fn expr_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Stmt, ParsePanic>
@@ -451,7 +482,7 @@ where
     Ok(Stmt::Expr(expr))
 }
 
-fn expr<'arena, 'src, Reporter>(
+fn expr<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -461,7 +492,7 @@ where
     assignment(reporter, scanner)
 }
 
-fn assignment<'arena, 'src, Reporter>(
+fn assignment<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -480,6 +511,11 @@ where
                 target: name,
                 scope_distance: None,
                 expr: rhs,
+            }),
+            Expr::Get { object, property } => Ok(Expr::Set {
+                object: object,
+                property: property,
+                value: rhs,
             }),
             // Not a valid assignment target
             // Report the error to trigger top level error, but don't error out here so we continue parsing
@@ -523,7 +559,7 @@ const BINARY_SYMBOLS: [Symbol; 10] = [
     Symbol::Slash,
 ];
 
-fn logical_or<'arena, 'src, Reporter>(
+fn logical_or<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -533,7 +569,7 @@ where
     left_recursive_logical_op(reporter, scanner, Keyword::Or, logical_and)
 }
 
-fn logical_and<'arena, 'src, Reporter>(
+fn logical_and<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -543,7 +579,7 @@ where
     left_recursive_logical_op(reporter, scanner, Keyword::And, equality)
 }
 
-fn equality<'arena, 'src, Reporter>(
+fn equality<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -553,7 +589,7 @@ where
     left_recursive_binary_op(reporter, scanner, &EQUALITY_SYMBOLS, ternary)
 }
 
-fn ternary<'arena, 'src, Reporter>(
+fn ternary<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -578,7 +614,7 @@ where
     }
 }
 
-fn comparison<'arena, 'src, Reporter>(
+fn comparison<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -588,7 +624,7 @@ where
     left_recursive_binary_op(reporter, scanner, &COMPARISON_SYMBOLS, term)
 }
 
-fn term<'arena, 'src, Reporter>(
+fn term<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -598,7 +634,7 @@ where
     left_recursive_binary_op(reporter, scanner, &TERM_SYMBOLS, factor)
 }
 
-fn factor<'arena, 'src, Reporter>(
+fn factor<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -610,7 +646,7 @@ where
 
 const UNARY_SYMBOLS: [Symbol; 2] = [Symbol::Minus, Symbol::Bang];
 
-fn unary<'arena, 'src, Reporter>(
+fn unary<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -632,7 +668,7 @@ where
     }
 }
 
-fn call<'arena, 'src, Reporter>(
+fn call<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -643,6 +679,12 @@ where
     loop {
         if scanner.next_if(|next| *next == Symbol::LeftParen).is_some() {
             expr = finish_call(reporter, scanner, expr)?;
+        } else if scanner.next_if(|next| *next == Symbol::Dot).is_some() {
+            let name = expect_identifier(reporter, scanner)?;
+            expr = Expr::Get {
+                object: Box::new(expr),
+                property: name.to_string(),
+            };
         } else {
             break;
         }
@@ -650,7 +692,7 @@ where
     Ok(expr)
 }
 
-fn finish_call<'arena, 'src, Reporter>(
+fn finish_call<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
     callee: Expr,
@@ -686,7 +728,7 @@ where
     })
 }
 
-fn primary<'arena, 'src, Reporter>(
+fn primary<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
 ) -> Result<Expr, ParsePanic>
@@ -756,7 +798,7 @@ where
 
 // It occurs to me it might be possible to do this a single recursive call that unfolds generically
 // instead of encoding the recursion in separate helpers
-fn left_recursive_binary_op<'arena, 'src, Reporter, F>(
+fn left_recursive_binary_op<'src, Reporter, F>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
     symbols: &[Symbol],
@@ -885,7 +927,7 @@ where
     }
 }
 
-fn comma_separated_identifiers<'arena, 'src, Reporter>(
+fn comma_separated_identifiers<'src, Reporter>(
     idents: &mut Vec<String>,
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,

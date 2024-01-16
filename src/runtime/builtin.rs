@@ -3,7 +3,7 @@ use std::io::stdin;
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use super::callable::PlatformFunc;
+use super::callable::BuiltinFunc;
 use super::interpreter::Environment;
 use super::interpreter::{Interpreter, RuntimeError, Value};
 
@@ -27,14 +27,14 @@ fn parse_num_impl(_interperter: &mut Interpreter, args: Vec<Value>) -> Result<Va
             let f = str.parse::<f64>()?;
             Ok(Value::Number(f))
         }
-        _ => Err(RuntimeError::TypeError),
+        _ => Err(RuntimeError::TypeError("not a number")),
     }
 }
 
 pub fn populate_builtin(global_env: &mut Environment) {
     global_env.bind(
         "clock",
-        Some(Value::Callable(Rc::new(PlatformFunc {
+        Some(Value::Callable(Rc::new(BuiltinFunc {
             name: "clock",
             arity: 0,
             call: clock_impl,
@@ -43,7 +43,7 @@ pub fn populate_builtin(global_env: &mut Environment) {
 
     global_env.bind(
         "read_stdin",
-        Some(Value::Callable(Rc::new(PlatformFunc {
+        Some(Value::Callable(Rc::new(BuiltinFunc {
             name: "read_stdin",
             arity: 0,
             call: read_stdin_impl,
@@ -52,7 +52,7 @@ pub fn populate_builtin(global_env: &mut Environment) {
 
     global_env.bind(
         "parse_num",
-        Some(Value::Callable(Rc::new(PlatformFunc {
+        Some(Value::Callable(Rc::new(BuiltinFunc {
             name: "parse_num",
             arity: 1,
             call: parse_num_impl,

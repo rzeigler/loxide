@@ -1,7 +1,7 @@
-use std::rc::Rc;
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
-use super::interpreter::{Environment, Interpreter, RuntimeError, UnwindCause, Value};
-use crate::ast::Stmt;
+use super::interpreter::{self, Environment, Interpreter, RuntimeError, UnwindCause, Value};
+use crate::ast::{ClassBody, Stmt};
 
 pub trait Callable {
     fn name(&self) -> &str;
@@ -10,13 +10,13 @@ pub trait Callable {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct PlatformFunc {
+pub struct BuiltinFunc {
     pub name: &'static str,
     pub arity: u8,
     pub call: fn(&mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError>,
 }
 
-impl Callable for PlatformFunc {
+impl Callable for BuiltinFunc {
     fn name(&self) -> &str {
         self.name
     }
@@ -73,5 +73,57 @@ impl Callable for HostedFunc {
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
         self.call_fun(args)
+    }
+}
+
+// We split the class from ClassInner so that the instances can hold a reference to inner for member lookup but
+// the Class can implement callable
+pub struct Class {
+    pub inner: Rc<ClassInner>,
+}
+
+pub struct ClassInner {
+    pub name: String,
+    pub body: ClassBody,
+}
+
+impl Callable for Class {
+    fn name(&self) -> &str {
+        &self.inner.name
+    }
+
+    fn arity(&self) -> u8 {
+        0
+    }
+
+    fn call(
+        &self,
+        interpreter: &mut Interpreter,
+        _args: Vec<Value>,
+    ) -> Result<Value, RuntimeError> {
+        // First, lets take all the methods off the class instance and stuff them into the closure
+        let members = Rc::new(RefCell::new(HashMap::new()));
+
+        let closure = interpreter.current_env_closure().open_scope();
+        let instance = Value::Instance {
+            members: members.clone(),
+            class: self.inner.clone(),
+        };
+        closure.bind("this", Some(instance.clone()));
+        // Freeze the closure for now
+
+        for method in self.inner.body.methods.iter() {
+            members.as_ref().borrow_mut().insert(
+                method.name.clone(),
+                Value::Callable(Rc::new(HostedFunc {
+                    name: method.name.clone(),
+                    parameters: method.parameters.clone(),
+                    body: method.body.as_ref().clone(),
+                    closure: closure.clone(),
+                })),
+            );
+        }
+
+        Ok(instance)
     }
 }

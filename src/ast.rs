@@ -6,15 +6,27 @@ use ordered_float::OrderedFloat;
 pub struct Program(pub Vec<Stmt>);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunDecl {
+    pub name: String,
+    pub parameters: Vec<String>,
+    pub body: Box<Stmt>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassBody {
+    pub methods: Vec<FunDecl>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Stmt {
     VarDecl {
-        identifier: String,
+        name: String,
         init: Option<Expr>,
     },
-    FunDecl {
+    FunDecl(FunDecl),
+    ClassDecl {
         name: String,
-        parameters: Vec<String>,
-        body: Box<Stmt>,
+        body: ClassBody,
     },
     Expr(Expr),
     Print(Expr),
@@ -71,6 +83,15 @@ pub enum Expr {
         callee: Box<Expr>,
         arguments: Vec<Expr>,
     },
+    Get {
+        object: Box<Expr>,
+        property: String,
+    },
+    Set {
+        object: Box<Expr>,
+        property: String,
+        value: Box<Expr>,
+    },
 }
 
 impl<'a> Display for Expr {
@@ -102,6 +123,12 @@ impl<'a> Display for Expr {
                 }
                 f.write_str(")")
             }
+            Expr::Get { object, property } => write!(f, "(get {} {})", object, property),
+            Expr::Set {
+                object,
+                property,
+                value,
+            } => write!(f, "(set {} {} {})", object, property, value),
         }
     }
 }

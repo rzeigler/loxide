@@ -10,15 +10,15 @@ use std::{
 
 use thiserror::Error;
 
-use super::callable::{Callable, HostedFunc};
-use crate::ast::{BinaryOp, Expr, Literal, LogicalOp, Program, Stmt, UnaryOp};
+use super::callable::{Callable, Class, ClassInner, HostedFunc};
+use crate::ast::{BinaryOp, Expr, FunDecl, Literal, LogicalOp, Program, Stmt, UnaryOp};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
     #[error("divide by zero")]
     DivideByZero,
-    #[error("type error")]
-    TypeError,
+    #[error("type error: {0}")]
+    TypeError(&'static str),
     #[error("undefined variable: {0}")]
     UndefinedVariable(String),
     #[error("uninitialized variable: {0}")]
@@ -47,6 +47,11 @@ pub enum Value {
     Number(f64),
     Bool(bool),
     Callable(Rc<dyn Callable>),
+    Instance {
+        members: Rc<RefCell<HashMap<String, Value>>>,
+        // Its possible this doesn't actually matter?
+        class: Rc<ClassInner>,
+    },
     Nil,
 }
 
@@ -74,7 +79,8 @@ impl Debug for Value {
             Value::Number(n) => write!(f, "Value::Number({})", n),
             Value::Bool(b) => write!(f, "Value::Bool({})", b),
             Value::Nil => f.write_str("Value::Nil"),
-            Value::Callable(func) => write!(f, "Value::Callable({})", func.name()),
+            Value::Callable(callable) => write!(f, "Value::Callable({})", callable.name()),
+            Value::Instance { members: _, class } => write!(f, "Value::Instance({})", class.name),
         }
     }
 }
@@ -86,7 +92,8 @@ impl ToString for Value {
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Nil => "nil".to_owned(),
-            Value::Callable(func) => format!("[fn {}]", func.name()),
+            Value::Callable(callable) => format!("{}", callable.name()),
+            Value::Instance { members: _, class } => format!("{} instance", class.name),
         }
     }
 }
@@ -300,7 +307,10 @@ impl Interpreter {
 
     pub fn execute(&mut self, stmt: &Stmt) -> Result<Value, UnwindCause> {
         match stmt {
-            Stmt::VarDecl { identifier, init } => {
+            Stmt::VarDecl {
+                name: identifier,
+                init,
+            } => {
                 if let Some(expr) = init {
                     let value = self.eval(expr)?;
                     self.environment.bind(&identifier, Some(value.clone()));
@@ -329,21 +339,16 @@ impl Interpreter {
                 then: if_true,
                 or_else: if_false,
             } => {
-                let if_value = self.eval(test)?;
-                match if_value {
-                    Value::Bool(true) => {
-                        self.execute(&if_true)?;
+                if self.eval(test)?.to_bool() {
+                    self.execute(&if_true)?;
+                    Ok(Value::Nil)
+                } else {
+                    if let Some(false_stmt) = if_false {
+                        self.execute(false_stmt)?;
+                        Ok(Value::Nil)
+                    } else {
                         Ok(Value::Nil)
                     }
-                    Value::Bool(false) => {
-                        if let Some(false_stmt) = if_false {
-                            self.execute(false_stmt)?;
-                            Ok(Value::Nil)
-                        } else {
-                            Ok(Value::Nil)
-                        }
-                    }
-                    _ => Err(UnwindCause::Error(RuntimeError::TypeError)),
                 }
             }
             Stmt::Loop { expr, body } => {
@@ -359,11 +364,11 @@ impl Interpreter {
                 Ok(Value::Nil)
             }
             Stmt::Break => Err(UnwindCause::Break),
-            Stmt::FunDecl {
+            Stmt::FunDecl(FunDecl {
                 name,
                 parameters,
                 body,
-            } => {
+            }) => {
                 let func = HostedFunc {
                     name: name.clone(),
                     parameters: parameters.clone(),
@@ -381,6 +386,18 @@ impl Interpreter {
                     Value::Nil
                 };
                 return Err(UnwindCause::Return(v));
+            }
+            Stmt::ClassDecl { name, body } => {
+                self.environment.bind(
+                    &name,
+                    Some(Value::Callable(Rc::new(Class {
+                        inner: Rc::new(ClassInner {
+                            name: name.clone(),
+                            body: body.clone(),
+                        }),
+                    }))),
+                );
+                Ok(Value::Nil)
             }
         }
     }
@@ -510,6 +527,34 @@ impl Interpreter {
                     )));
                 }
             }
+            Expr::Get { object, property } => match self.eval(object)? {
+                Value::Instance { members, class: _ } => {
+                    if let Some(value) = members.borrow().get(property) {
+                        Ok(value.clone())
+                    } else {
+                        Err(UnwindCause::Error(RuntimeError::UndefinedVariable(
+                            format!("undefined property: {}", property),
+                        )))
+                    }
+                }
+                _ => Err(UnwindCause::Error(RuntimeError::TypeError(
+                    "only instances have properties",
+                ))),
+            },
+            Expr::Set {
+                object,
+                property,
+                value,
+            } => match self.eval(object)? {
+                Value::Instance { members, class: _ } => {
+                    let value = self.eval(value)?;
+                    members.borrow_mut().insert(property.clone(), value.clone());
+                    Ok(value)
+                }
+                _ => Err(UnwindCause::Error(RuntimeError::TypeError(
+                    "only instances have properties",
+                ))),
+            },
         }
     }
 }
@@ -582,11 +627,11 @@ impl Resolver {
             }
             Stmt::Break => Ok(()),
             Stmt::Expr(expr) => self.resolve_expr(expr),
-            Stmt::FunDecl {
+            Stmt::FunDecl(FunDecl {
                 name,
                 parameters,
                 body,
-            } => {
+            }) => {
                 self.define(name);
                 self.begin_scope();
                 for param in parameters.iter() {
@@ -619,12 +664,28 @@ impl Resolver {
                 }
                 Ok(())
             }
-            Stmt::VarDecl { identifier, init } => {
+            Stmt::VarDecl {
+                name: identifier,
+                init,
+            } => {
                 self.declare(&identifier);
                 if let Some(init) = init {
                     self.resolve_expr(init)?;
                 }
                 self.define(&identifier);
+                Ok(())
+            }
+            Stmt::ClassDecl { name, body } => {
+                self.define(&name);
+                for method in body.methods.iter_mut() {
+                    self.define(&method.name);
+                    self.begin_scope();
+                    for param in method.parameters.iter() {
+                        self.define(param);
+                    }
+                    self.resolve_stmt(&mut method.body)?;
+                    self.end_scope();
+                }
                 Ok(())
             }
         }
@@ -673,6 +734,18 @@ impl Resolver {
             Expr::Logical { left, op: _, right } => {
                 self.resolve_expr(left)?;
                 self.resolve_expr(right)
+            }
+            Expr::Get {
+                object,
+                property: _,
+            } => self.resolve_expr(object),
+            Expr::Set {
+                object,
+                property: _,
+                value,
+            } => {
+                self.resolve_expr(object)?;
+                self.resolve_expr(value)
             }
         }
     }

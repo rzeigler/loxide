@@ -181,8 +181,8 @@ impl<'lex> Scanner<'lex> {
         Scanner {
             code: code.as_bytes(),
             offset: 0,
-            line: 0,
-            offset_in_line: 0,
+            line: 1,
+            offset_in_line: 1,
         }
     }
 
