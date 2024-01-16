@@ -1,0 +1,12 @@
+class Adder {
+    init(a) {
+        this.a = a;
+    }
+
+    add(b) {
+        return this.a + b;
+    }
+}
+
+var adder = Adder(10);
+print adder.add(20);

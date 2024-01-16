@@ -10,8 +10,11 @@ use std::{
 
 use thiserror::Error;
 
-use super::callable::{Callable, Class, ClassInner, HostedFunc};
-use crate::ast::{BinaryOp, Expr, FunDecl, Literal, LogicalOp, Program, Stmt, UnaryOp};
+use super::callable::{Callable, Class, ClassInner, HostedFunc, INIT_METHOD_NAME};
+use crate::{
+    ast::{BinaryOp, Expr, FunDecl, Literal, LogicalOp, Program, Stmt, UnaryOp},
+    scanner::THIS_LITERAL,
+};
 
 #[derive(Error, Debug)]
 pub enum RuntimeError {
@@ -25,6 +28,8 @@ pub enum RuntimeError {
     UninitializedVariable(String),
     #[error("break outside of a loop")]
     InvalidBreak,
+    #[error("invalid return")]
+    InvalidReturn,
     #[error("not callable: {0}")]
     NotCallable(String),
     #[error("arity mismatch: {0}")]
@@ -238,8 +243,6 @@ impl Environment {
     }
 }
 
-const THIS: &str = "this";
-
 pub struct Interpreter {
     // None indicates that the variable is defined by not yet initialized
     environment: Rc<Environment>,
@@ -376,6 +379,7 @@ impl Interpreter {
                     parameters: parameters.clone(),
                     body: body.as_ref().clone(),
                     closure: self.current_env_closure(),
+                    is_init: false,
                 };
                 self.environment
                     .bind(name, Some(Value::Callable(Rc::new(func))));
@@ -470,6 +474,14 @@ impl Interpreter {
                 // If the name was defined, but there is not currently a value, the inner option is None
                 .ok_or(RuntimeError::UninitializedVariable(name.to_owned()))
                 .map_err(|err| UnwindCause::Error(err)),
+            Expr::This { scope_distance } => {
+                let this = self
+                    .environment
+                    .lookup(THIS_LITERAL, scope_distance.unwrap())
+                    // The resolution should prevent this from failing
+                    .unwrap();
+                Ok(this)
+            }
             Expr::Assignment {
                 target,
                 scope_distance,
@@ -587,15 +599,32 @@ pub enum ResolveState {
     Defined,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CurrentClass {
+    None,
+    Class,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FunctionType {
+    Initializer,
+    Method,
+    Function,
+}
+
 struct Resolver {
-    // We only represent the scopes above global
+    // The resolver is kind of weird, we should probably not be a class and instead pass it by arguments
     scopes: Vec<HashMap<String, ResolveState>>,
+    current_class: CurrentClass,
+    current_function: Option<FunctionType>,
 }
 
 impl Resolver {
     pub fn new() -> Resolver {
         Resolver {
             scopes: vec![HashMap::new()],
+            current_class: CurrentClass::None,
+            current_function: None,
         }
     }
 
@@ -634,6 +663,7 @@ impl Resolver {
                 parameters,
                 body,
             }) => {
+                self.current_function = Some(FunctionType::Function);
                 self.define(name);
                 self.begin_scope();
                 for param in parameters.iter() {
@@ -661,6 +691,12 @@ impl Resolver {
             }
             Stmt::Print(expr) => self.resolve_expr(expr),
             Stmt::Return(expr) => {
+                // Returns must be in a function, if its an initializer, we disallow setting an expr
+                if self.current_function == None
+                    || (self.current_function == Some(FunctionType::Initializer) && expr.is_some())
+                {
+                    return Err(RuntimeError::InvalidReturn);
+                }
                 if let Some(ret) = expr {
                     self.resolve_expr(ret)?;
                 }
@@ -682,10 +718,18 @@ impl Resolver {
                 // The class body introduces an implicit scope ...
                 self.begin_scope();
                 // ... which contains this
-                self.define(THIS);
+                self.define(THIS_LITERAL);
+
+                // Is there a problem with the cleanup logic, do we need some kind of guard?
+                self.current_class = CurrentClass::Class;
 
                 for method in body.methods.iter_mut() {
                     self.define(&method.name);
+                    self.current_function = if method.name == INIT_METHOD_NAME {
+                        Some(FunctionType::Initializer)
+                    } else {
+                        Some(FunctionType::Method)
+                    };
                     self.begin_scope();
                     for param in method.parameters.iter() {
                         self.define(param);
@@ -693,6 +737,8 @@ impl Resolver {
                     self.resolve_stmt(&mut method.body)?;
                     self.end_scope();
                 }
+
+                self.current_class = CurrentClass::None;
 
                 self.end_scope();
                 Ok(())
@@ -728,6 +774,16 @@ impl Resolver {
             } => {
                 *scope_distance = Some(self.resolve_identifier(name)?);
                 Ok(())
+            }
+            Expr::This { scope_distance } => {
+                if self.current_class == CurrentClass::None {
+                    Err(RuntimeError::UndefinedVariable(
+                        "this (outside of class)".to_string(),
+                    ))
+                } else {
+                    *scope_distance = Some(self.resolve_identifier(THIS_LITERAL)?);
+                    Ok(())
+                }
             }
             Expr::Ternary {
                 test,

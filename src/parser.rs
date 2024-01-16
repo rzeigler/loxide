@@ -769,8 +769,7 @@ where
                     scope_distance: None,
                 },
                 // Just tread this as though it were an identifier
-                TokenType::Keyword(Keyword::This) => Expr::Identifier {
-                    name: "this".to_string(),
+                TokenType::Keyword(Keyword::This) => Expr::This {
                     scope_distance: None,
                 },
                 // An unexpected binary symbol so lets try and parse the rhs before raising the error

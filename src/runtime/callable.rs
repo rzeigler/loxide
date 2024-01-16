@@ -1,7 +1,10 @@
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
 
 use super::interpreter::{Environment, Interpreter, RuntimeError, UnwindCause, Value};
-use crate::ast::{ClassBody, Stmt};
+use crate::{
+    ast::{ClassBody, Stmt},
+    scanner::THIS_LITERAL,
+};
 
 pub trait Callable {
     fn name(&self) -> &str;
@@ -36,6 +39,7 @@ pub struct HostedFunc {
     pub parameters: Vec<String>,
     pub body: Stmt,
     pub closure: Rc<Environment>,
+    pub is_init: bool,
 }
 
 impl HostedFunc {
@@ -50,7 +54,13 @@ impl HostedFunc {
         let result = interpreter.execute(&self.body);
         interpreter.end_scope();
         match result {
-            Ok(_) => Ok(Value::Nil),
+            Ok(value) => {
+                if self.is_init {
+                    Ok(interpreter.current_env().lookup(THIS_LITERAL, 0).unwrap())
+                } else {
+                    Ok(value)
+                }
+            }
             Err(UnwindCause::Return(v)) => Ok(v),
             Err(UnwindCause::Break) => Err(RuntimeError::InvalidBreak),
             Err(UnwindCause::Error(error)) => Err(error),
@@ -78,6 +88,8 @@ impl Callable for HostedFunc {
 
 // We split the class from ClassInner so that the instances can hold a reference to inner for member lookup but
 // the Class can implement callable
+pub const INIT_METHOD_NAME: &str = "init";
+
 pub struct Class {
     pub inner: Rc<ClassInner>,
 }
@@ -93,14 +105,20 @@ impl Callable for Class {
     }
 
     fn arity(&self) -> u8 {
-        0
+        if let Some(init) = self
+            .inner
+            .body
+            .methods
+            .iter()
+            .find(|fun_decl| fun_decl.name == INIT_METHOD_NAME)
+        {
+            init.parameters.len().try_into().unwrap()
+        } else {
+            0
+        }
     }
 
-    fn call(
-        &self,
-        interpreter: &mut Interpreter,
-        _args: Vec<Value>,
-    ) -> Result<Value, RuntimeError> {
+    fn call(&self, interpreter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError> {
         // First, lets take all the methods off the class instance and stuff them into the closure
         let members = Rc::new(RefCell::new(HashMap::new()));
 
@@ -120,10 +138,24 @@ impl Callable for Class {
                     parameters: method.parameters.clone(),
                     body: method.body.as_ref().clone(),
                     closure: closure.clone(),
+                    // This should probably be cached once or something
+                    is_init: method.name == INIT_METHOD_NAME,
                 })),
             );
         }
 
+        // This dance ensures that we release the members refcell so the init call can access it
+        let init = if let Some(Value::Callable(init)) = members.borrow().get(INIT_METHOD_NAME) {
+            Some(init.clone())
+        } else {
+            None
+        };
+
+        if let Some(init) = init {
+            init.call(interpreter, args)?;
+        }
+
+        // Did we have an initializer?
         Ok(instance)
     }
 }

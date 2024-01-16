@@ -69,6 +69,9 @@ pub enum Expr {
         // included
         scope_distance: Option<u32>,
     },
+    This {
+        scope_distance: Option<u32>,
+    },
     Assignment {
         target: String,
         scope_distance: Option<u32>,
@@ -110,6 +113,7 @@ impl<'a> Display for Expr {
                 name,
                 scope_distance: _,
             } => write!(f, "(ident {})", name),
+            Expr::This { scope_distance: _ } => f.write_str("(this)"),
             Expr::Assignment {
                 target,
                 scope_distance: _,
