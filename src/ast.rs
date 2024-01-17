@@ -15,6 +15,7 @@ pub struct FunDecl {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClassBody {
     pub methods: Vec<FunDecl>,
+    pub static_methods: Vec<FunDecl>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

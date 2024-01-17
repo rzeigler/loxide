@@ -262,19 +262,31 @@ where
         return Err(ParsePanic {});
     }
     let mut methods = Vec::new();
+    let mut static_methods = Vec::new();
     // Class methods don't have fun prefix
     while scanner
         .next_if(|next| *next == Symbol::RightBrace)
         .is_none()
     {
-        methods.push(match finish_fun_decl(reporter, scanner)? {
-            Stmt::FunDecl(decl) => decl,
-            _ => unreachable!("finish_fun_decl didn't return a FunDecl"),
-        });
+        // Is this a class method or not
+        if scanner.next_if(|next| *next == Keyword::Class).is_some() {
+            static_methods.push(match finish_fun_decl(reporter, scanner)? {
+                Stmt::FunDecl(decl) => decl,
+                _ => unreachable!("finish_fun_decl didn't return a FunDecl"),
+            });
+        } else {
+            methods.push(match finish_fun_decl(reporter, scanner)? {
+                Stmt::FunDecl(decl) => decl,
+                _ => unreachable!("finish_fun_decl didn't return a FunDecl"),
+            });
+        }
     }
     Ok(Stmt::ClassDecl {
         name: name.to_string(),
-        body: ClassBody { methods },
+        body: ClassBody {
+            methods,
+            static_methods,
+        },
     })
 }
 

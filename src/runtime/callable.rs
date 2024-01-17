@@ -133,19 +133,26 @@ impl Callable for Class {
         for method in self.inner.body.methods.iter() {
             members.as_ref().borrow_mut().insert(
                 method.name.clone(),
-                Value::Callable(Rc::new(HostedFunc {
-                    name: method.name.clone(),
-                    parameters: method.parameters.clone(),
-                    body: method.body.as_ref().clone(),
-                    closure: closure.clone(),
-                    // This should probably be cached once or something
-                    is_init: method.name == INIT_METHOD_NAME,
-                })),
+                Value::Callable {
+                    callable: Rc::new(HostedFunc {
+                        name: method.name.clone(),
+                        parameters: method.parameters.clone(),
+                        body: method.body.as_ref().clone(),
+                        closure: closure.clone(),
+                        // This should probably be cached once or something
+                        is_init: method.name == INIT_METHOD_NAME,
+                    }),
+                    members: HashMap::new(),
+                },
             );
         }
 
         // This dance ensures that we release the members refcell so the init call can access it
-        let init = if let Some(Value::Callable(init)) = members.borrow().get(INIT_METHOD_NAME) {
+        let init = if let Some(Value::Callable {
+            callable: init,
+            members: _,
+        }) = members.borrow().get(INIT_METHOD_NAME)
+        {
             Some(init.clone())
         } else {
             None

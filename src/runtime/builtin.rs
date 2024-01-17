@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::prelude::*;
 use std::io::stdin;
 use std::rc::Rc;
@@ -34,28 +35,37 @@ fn parse_num_impl(_interperter: &mut Interpreter, args: Vec<Value>) -> Result<Va
 pub fn populate_builtin(global_env: &mut Environment) {
     global_env.bind(
         "clock",
-        Some(Value::Callable(Rc::new(BuiltinFunc {
-            name: "clock",
-            arity: 0,
-            call: clock_impl,
-        }))),
+        Some(Value::Callable {
+            callable: Rc::new(BuiltinFunc {
+                name: "clock",
+                arity: 0,
+                call: clock_impl,
+            }),
+            members: HashMap::new(),
+        }),
     );
 
     global_env.bind(
         "read_stdin",
-        Some(Value::Callable(Rc::new(BuiltinFunc {
-            name: "read_stdin",
-            arity: 0,
-            call: read_stdin_impl,
-        }))),
+        Some(Value::Callable {
+            callable: Rc::new(BuiltinFunc {
+                name: "read_stdin",
+                arity: 0,
+                call: read_stdin_impl,
+            }),
+            members: HashMap::new(),
+        }),
     );
 
     global_env.bind(
         "parse_num",
-        Some(Value::Callable(Rc::new(BuiltinFunc {
-            name: "parse_num",
-            arity: 1,
-            call: parse_num_impl,
-        }))),
+        Some(Value::Callable {
+            callable: Rc::new(BuiltinFunc {
+                name: "parse_num",
+                arity: 1,
+                call: parse_num_impl,
+            }),
+            members: HashMap::new(),
+        }),
     );
 }

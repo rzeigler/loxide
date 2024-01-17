@@ -51,7 +51,11 @@ pub enum Value {
     String(Rc<String>),
     Number(f64),
     Bool(bool),
-    Callable(Rc<dyn Callable>),
+    Callable {
+        callable: Rc<dyn Callable>,
+        // A callable might be a class instance, at which point we provide members that can be resolved
+        members: HashMap<String, Value>,
+    },
     Instance {
         members: Rc<RefCell<HashMap<String, Value>>>,
         // Its possible this doesn't actually matter?
@@ -71,7 +75,10 @@ impl Value {
 
     fn to_callable(&self) -> Option<&dyn Callable> {
         match self {
-            Self::Callable(callable) => Some(callable.as_ref()),
+            Self::Callable {
+                callable,
+                members: _,
+            } => Some(callable.as_ref()),
             _ => None,
         }
     }
@@ -84,7 +91,10 @@ impl Debug for Value {
             Value::Number(n) => write!(f, "Value::Number({})", n),
             Value::Bool(b) => write!(f, "Value::Bool({})", b),
             Value::Nil => f.write_str("Value::Nil"),
-            Value::Callable(callable) => write!(f, "Value::Callable({})", callable.name()),
+            Value::Callable {
+                callable,
+                members: _,
+            } => write!(f, "Value::Callable({})", callable.name()),
             Value::Instance { members: _, class } => write!(f, "Value::Instance({})", class.name),
         }
     }
@@ -97,7 +107,10 @@ impl ToString for Value {
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Nil => "nil".to_owned(),
-            Value::Callable(callable) => format!("{}", callable.name()),
+            Value::Callable {
+                callable,
+                members: _,
+            } => format!("{}", callable.name()),
             Value::Instance { members: _, class } => format!("{} instance", class.name),
         }
     }
@@ -111,7 +124,16 @@ impl PartialEq for Value {
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::Nil, Self::Nil) => true,
             // Maybe these should check or something
-            (Self::Callable(_), Self::Callable(_)) => false,
+            (
+                Self::Callable {
+                    callable: _,
+                    members: _,
+                },
+                Self::Callable {
+                    callable: _,
+                    members: _,
+                },
+            ) => false,
             _ => false,
         }
     }
@@ -381,8 +403,13 @@ impl Interpreter {
                     closure: self.current_env_closure(),
                     is_init: false,
                 };
-                self.environment
-                    .bind(name, Some(Value::Callable(Rc::new(func))));
+                self.environment.bind(
+                    name,
+                    Some(Value::Callable {
+                        callable: Rc::new(func),
+                        members: HashMap::new(),
+                    }),
+                );
                 Ok(Value::Nil)
             }
             Stmt::Return(expr) => {
@@ -394,14 +421,34 @@ impl Interpreter {
                 return Err(UnwindCause::Return(v));
             }
             Stmt::ClassDecl { name, body } => {
+                let mut class_members = HashMap::new();
+                for static_member in body.static_methods.iter() {
+                    class_members.insert(
+                        static_member.name.clone(),
+                        Value::Callable {
+                            callable: Rc::new(HostedFunc {
+                                name: static_member.name.clone(),
+                                parameters: static_member.parameters.clone(),
+                                body: static_member.body.as_ref().clone(),
+                                closure: self.environment.clone(),
+                                is_init: false,
+                            }),
+                            members: HashMap::new(),
+                        },
+                    );
+                }
+                // TODO: construct the methods
                 self.environment.bind(
                     &name,
-                    Some(Value::Callable(Rc::new(Class {
-                        inner: Rc::new(ClassInner {
-                            name: name.clone(),
-                            body: body.clone(),
+                    Some(Value::Callable {
+                        callable: Rc::new(Class {
+                            inner: Rc::new(ClassInner {
+                                name: name.clone(),
+                                body: body.clone(),
+                            }),
                         }),
-                    }))),
+                        members: class_members,
+                    }),
                 );
                 Ok(Value::Nil)
             }
@@ -551,8 +598,20 @@ impl Interpreter {
                         )))
                     }
                 }
+                Value::Callable {
+                    callable: _,
+                    members,
+                } => {
+                    if let Some(value) = members.get(property) {
+                        Ok(value.clone())
+                    } else {
+                        Err(UnwindCause::Error(RuntimeError::UndefinedVariable(
+                            format!("undefined property: {}", property),
+                        )))
+                    }
+                }
                 _ => Err(UnwindCause::Error(RuntimeError::TypeError(
-                    "only instances have properties",
+                    "only instances and classes have properties",
                 ))),
             },
             Expr::Set {
@@ -566,7 +625,7 @@ impl Interpreter {
                     Ok(value)
                 }
                 _ => Err(UnwindCause::Error(RuntimeError::TypeError(
-                    "only instances have properties",
+                    "only instances may be assigned to properties",
                 ))),
             },
         }
@@ -715,6 +774,18 @@ impl Resolver {
             }
             Stmt::ClassDecl { name, body } => {
                 self.define(&name);
+
+                for method in body.static_methods.iter_mut() {
+                    self.define(&method.name);
+                    self.current_function = Some(FunctionType::Function);
+                    self.begin_scope();
+                    for param in method.parameters.iter() {
+                        self.define(param);
+                    }
+                    self.resolve_stmt(&mut method.body)?;
+                    self.end_scope();
+                }
+
                 // The class body introduces an implicit scope ...
                 self.begin_scope();
                 // ... which contains this

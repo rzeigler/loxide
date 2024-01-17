@@ -6,7 +6,14 @@ class Adder {
     add(b) {
         return this.a + b;
     }
+
+    class boot(a) {
+        return Adder(a);
+    }
 }
 
 var adder = Adder(10);
 print adder.add(20);
+
+var otherAdder = Adder.boot(10);
+print otherAdder.add(20);
