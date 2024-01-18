@@ -1,11 +1,12 @@
 mod builtin;
 mod callable;
-mod interpreter;
+mod class;
+mod runtime;
 
 pub use builtin::populate_builtin;
-pub use interpreter::{Interpreter, Value};
+pub use runtime::{Interpreter, Value};
 
-use self::interpreter::Environment;
+use self::runtime::Environment;
 
 pub fn stock_interpreter() -> Interpreter {
     let mut global_env = Environment::new_global();

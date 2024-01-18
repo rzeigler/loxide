@@ -15,5 +15,5 @@ class Adder {
 var adder = Adder(10);
 print adder.add(20);
 
-var otherAdder = Adder.boot(10);
+var otherAdder = Adder.boot(20);
 print otherAdder.add(20);

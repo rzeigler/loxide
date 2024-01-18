@@ -1,6 +1,6 @@
 mod ast;
+mod interpreter;
 mod parser;
-mod runtime;
 mod scanner;
 
 use std::env::args;
@@ -11,10 +11,10 @@ use std::io::BufReader;
 
 use anyhow::{Context, Result};
 
+use interpreter::stock_interpreter;
+use interpreter::Interpreter;
+use interpreter::Value;
 use parser::parse;
-use runtime::stock_interpreter;
-use runtime::Interpreter;
-use runtime::Value;
 use scanner::Scanner;
 
 use crate::parser::WriteErrorReporter;

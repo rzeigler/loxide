@@ -285,7 +285,7 @@ where
         name: name.to_string(),
         body: ClassBody {
             methods,
-            static_methods,
+            class_methods: static_methods,
         },
     })
 }

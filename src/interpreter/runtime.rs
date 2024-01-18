@@ -10,7 +10,10 @@ use std::{
 
 use thiserror::Error;
 
-use super::callable::{Callable, Class, ClassInner, HostedFunc, INIT_METHOD_NAME};
+use super::{
+    callable::{Func, LoxFunc},
+    class::{Class, Instance, INIT_METHOD_NAME},
+};
 use crate::{
     ast::{BinaryOp, Expr, FunDecl, Literal, LogicalOp, Program, Stmt, UnaryOp},
     scanner::THIS_LITERAL,
@@ -51,16 +54,9 @@ pub enum Value {
     String(Rc<String>),
     Number(f64),
     Bool(bool),
-    Callable {
-        callable: Rc<dyn Callable>,
-        // A callable might be a class instance, at which point we provide members that can be resolved
-        members: HashMap<String, Value>,
-    },
-    Instance {
-        members: Rc<RefCell<HashMap<String, Value>>>,
-        // Its possible this doesn't actually matter?
-        class: Rc<ClassInner>,
-    },
+    Callable(Rc<dyn Func>),
+    Class(Class),
+    Instance(Instance),
     Nil,
 }
 
@@ -73,15 +69,15 @@ impl Value {
         }
     }
 
-    fn to_callable(&self) -> Option<&dyn Callable> {
-        match self {
-            Self::Callable {
-                callable,
-                members: _,
-            } => Some(callable.as_ref()),
-            _ => None,
-        }
-    }
+    // fn to_callable(&self) -> Option<&dyn Func> {
+    //     match self {
+    //         Self::Callable {
+    //             callable,
+    //             members: _,
+    //         } => Some(callable.as_ref()),
+    //         _ => None,
+    //     }
+    // }
 }
 
 impl Debug for Value {
@@ -91,11 +87,11 @@ impl Debug for Value {
             Value::Number(n) => write!(f, "Value::Number({})", n),
             Value::Bool(b) => write!(f, "Value::Bool({})", b),
             Value::Nil => f.write_str("Value::Nil"),
-            Value::Callable {
-                callable,
-                members: _,
-            } => write!(f, "Value::Callable({})", callable.name()),
-            Value::Instance { members: _, class } => write!(f, "Value::Instance({})", class.name),
+            Value::Callable(func) => write!(f, "Value::Callable({})", func.name()),
+            Value::Class(class) => write!(f, "Value::Class({})", class.name()),
+            Value::Instance(Instance { fields: _, class }) => {
+                write!(f, "Value::Instance({})", class.inner.name)
+            }
         }
     }
 }
@@ -107,11 +103,11 @@ impl ToString for Value {
             Value::Number(n) => n.to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Nil => "nil".to_owned(),
-            Value::Callable {
-                callable,
-                members: _,
-            } => format!("{}", callable.name()),
-            Value::Instance { members: _, class } => format!("{} instance", class.name),
+            Value::Callable(func) => format!("{}", func.name()),
+            Value::Class(class) => format!("{}", class.name()),
+            Value::Instance(Instance { fields: _, class }) => {
+                format!("{} instance", class.inner.name)
+            }
         }
     }
 }
@@ -123,17 +119,6 @@ impl PartialEq for Value {
             (Self::Number(left), Self::Number(right)) => left == right,
             (Self::Bool(left), Self::Bool(right)) => left == right,
             (Self::Nil, Self::Nil) => true,
-            // Maybe these should check or something
-            (
-                Self::Callable {
-                    callable: _,
-                    members: _,
-                },
-                Self::Callable {
-                    callable: _,
-                    members: _,
-                },
-            ) => false,
             _ => false,
         }
     }
@@ -396,20 +381,15 @@ impl Interpreter {
                 parameters,
                 body,
             }) => {
-                let func = HostedFunc {
+                let func = LoxFunc {
                     name: name.clone(),
                     parameters: parameters.clone(),
                     body: body.as_ref().clone(),
                     closure: self.current_env_closure(),
                     is_init: false,
                 };
-                self.environment.bind(
-                    name,
-                    Some(Value::Callable {
-                        callable: Rc::new(func),
-                        members: HashMap::new(),
-                    }),
-                );
+                self.environment
+                    .bind(name, Some(Value::Callable(Rc::new(func))));
                 Ok(Value::Nil)
             }
             Stmt::Return(expr) => {
@@ -421,35 +401,9 @@ impl Interpreter {
                 return Err(UnwindCause::Return(v));
             }
             Stmt::ClassDecl { name, body } => {
-                let mut class_members = HashMap::new();
-                for static_member in body.static_methods.iter() {
-                    class_members.insert(
-                        static_member.name.clone(),
-                        Value::Callable {
-                            callable: Rc::new(HostedFunc {
-                                name: static_member.name.clone(),
-                                parameters: static_member.parameters.clone(),
-                                body: static_member.body.as_ref().clone(),
-                                closure: self.environment.clone(),
-                                is_init: false,
-                            }),
-                            members: HashMap::new(),
-                        },
-                    );
-                }
+                let class = Class::new(name, body, self.current_env_closure());
                 // TODO: construct the methods
-                self.environment.bind(
-                    &name,
-                    Some(Value::Callable {
-                        callable: Rc::new(Class {
-                            inner: Rc::new(ClassInner {
-                                name: name.clone(),
-                                body: body.clone(),
-                            }),
-                        }),
-                        members: class_members,
-                    }),
-                );
+                self.environment.bind(&name, Some(Value::Class(class)));
                 Ok(Value::Nil)
             }
         }
@@ -570,27 +524,45 @@ impl Interpreter {
             }
             Expr::Call { callee, arguments } => {
                 let callee = self.eval(callee)?;
-                let args = arguments
-                    .iter()
-                    .map(|expr| self.eval(expr))
-                    .collect::<Result<Vec<_>, _>>()?;
-                if let Some(callable) = callee.to_callable() {
-                    if args.len() != callable.arity().into() {
-                        Err(UnwindCause::Error(RuntimeError::ArityMismatch(
-                            callee.to_string(),
-                        )))
-                    } else {
-                        callable.call(self, args).map_err(|e| UnwindCause::Error(e))
+                match callee {
+                    Value::Callable(func) => {
+                        if usize::from(func.arity()) != arguments.len() {
+                            return Err(UnwindCause::Error(RuntimeError::ArityMismatch(format!(
+                                "function {} takes {} args",
+                                func.name(),
+                                func.arity()
+                            ))));
+                        }
+                        let args = arguments
+                            .iter()
+                            .map(|expr| self.eval(expr))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        func.call(self, args).map_err(|e| UnwindCause::Error(e))
                     }
-                } else {
-                    return Err(UnwindCause::Error(RuntimeError::NotCallable(
+                    Value::Class(class) => {
+                        if usize::from(class.arity()) != arguments.len() {
+                            return Err(UnwindCause::Error(RuntimeError::ArityMismatch(format!(
+                                "class init {} takes {} args",
+                                class.name(),
+                                class.arity()
+                            ))));
+                        }
+                        let args = arguments
+                            .iter()
+                            .map(|expr| self.eval(expr))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        class
+                            .construct(self, args)
+                            .map_err(|e| UnwindCause::Error(e))
+                    }
+                    _ => Err(UnwindCause::Error(RuntimeError::NotCallable(
                         callee.to_string(),
-                    )));
+                    ))),
                 }
             }
             Expr::Get { object, property } => match self.eval(object)? {
-                Value::Instance { members, class: _ } => {
-                    if let Some(value) = members.borrow().get(property) {
+                Value::Instance(instance) => {
+                    if let Some(value) = instance.fields.borrow().get(property) {
                         Ok(value.clone())
                     } else {
                         Err(UnwindCause::Error(RuntimeError::UndefinedVariable(
@@ -598,12 +570,9 @@ impl Interpreter {
                         )))
                     }
                 }
-                Value::Callable {
-                    callable: _,
-                    members,
-                } => {
-                    if let Some(value) = members.get(property) {
-                        Ok(value.clone())
+                Value::Class(class) => {
+                    if let Some(func) = class.inner.class_methods.get(property) {
+                        Ok(Value::Callable(func.clone()))
                     } else {
                         Err(UnwindCause::Error(RuntimeError::UndefinedVariable(
                             format!("undefined property: {}", property),
@@ -619,9 +588,12 @@ impl Interpreter {
                 property,
                 value,
             } => match self.eval(object)? {
-                Value::Instance { members, class: _ } => {
+                Value::Instance(instance) => {
                     let value = self.eval(value)?;
-                    members.borrow_mut().insert(property.clone(), value.clone());
+                    instance
+                        .fields
+                        .borrow_mut()
+                        .insert(property.clone(), value.clone());
                     Ok(value)
                 }
                 _ => Err(UnwindCause::Error(RuntimeError::TypeError(
@@ -775,7 +747,7 @@ impl Resolver {
             Stmt::ClassDecl { name, body } => {
                 self.define(&name);
 
-                for method in body.static_methods.iter_mut() {
+                for method in body.class_methods.iter_mut() {
                     self.define(&method.name);
                     self.current_function = Some(FunctionType::Function);
                     self.begin_scope();
