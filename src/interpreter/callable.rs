@@ -1,6 +1,9 @@
 use std::rc::Rc;
 
-use super::runtime::{Environment, Interpreter, RuntimeError, UnwindCause, Value};
+use super::{
+    class::Instance,
+    runtime::{Environment, Interpreter, RuntimeError, UnwindCause, Value},
+};
 use crate::{ast::Stmt, scanner::THIS_LITERAL};
 
 pub trait Func {
@@ -27,32 +30,6 @@ impl Func for RustFunc {
 
     fn call(&self, interperter: &mut Interpreter, args: Vec<Value>) -> Result<Value, RuntimeError> {
         (self.call)(interperter, args)
-    }
-}
-
-// We need to put off attaching the closure until the instance is actually instantiated
-// This allows us to do things like put the this into the closure
-#[derive(Clone)]
-pub struct UnboundLoxFunc {
-    pub name: String,
-    pub parameters: Vec<String>,
-    pub body: Stmt,
-    pub is_init: bool,
-}
-
-impl UnboundLoxFunc {
-    pub fn bind(&self, closure: Rc<Environment>) -> LoxFunc {
-        LoxFunc {
-            name: self.name.clone(),
-            parameters: self.parameters.clone(),
-            body: self.body.clone(),
-            is_init: self.is_init,
-            closure,
-        }
-    }
-
-    pub fn arity(&self) -> u8 {
-        self.parameters.len().try_into().unwrap()
     }
 }
 
@@ -87,6 +64,18 @@ impl LoxFunc {
             Err(UnwindCause::Return(v)) => Ok(v),
             Err(UnwindCause::Break) => Err(RuntimeError::InvalidBreak),
             Err(UnwindCause::Error(error)) => Err(error),
+        }
+    }
+
+    pub fn bind(&self, this: Instance) -> LoxFunc {
+        let env = self.closure.clone().open_scope();
+        env.bind(THIS_LITERAL, Some(Value::Instance(this)));
+        LoxFunc {
+            name: self.name.clone(),
+            parameters: self.parameters.clone(),
+            body: self.body.clone(),
+            is_init: self.is_init,
+            closure: env,
         }
     }
 }

@@ -564,6 +564,8 @@ impl Interpreter {
                 Value::Instance(instance) => {
                     if let Some(value) = instance.fields.borrow().get(property) {
                         Ok(value.clone())
+                    } else if let Some(method) = instance.class.get_method(property) {
+                        Ok(Value::Callable(Rc::new(method.bind(instance.clone()))))
                     } else {
                         Err(UnwindCause::Error(RuntimeError::UndefinedVariable(
                             format!("undefined property: {}", property),

@@ -3,8 +3,8 @@ use std::{cell::RefCell, collections::HashMap, rc::Rc};
 use crate::ast::ClassBody;
 
 use super::{
+    callable::Func,
     callable::LoxFunc,
-    callable::{Func, UnboundLoxFunc},
     runtime::{Environment, RuntimeError},
     Interpreter, Value,
 };
@@ -16,52 +16,48 @@ pub struct Class {
     pub inner: Rc<ClassInner>,
 }
 
+impl Class {
+    pub fn get_method(&self, method: &str) -> Option<Rc<LoxFunc>> {
+        self.inner.methods.get(method).cloned()
+    }
+}
+
 pub struct ClassInner {
     pub name: String,
-    pub init: Option<UnboundLoxFunc>,
-    pub methods: Vec<UnboundLoxFunc>,
+    pub methods: HashMap<String, Rc<LoxFunc>>,
     pub class_methods: HashMap<String, Rc<LoxFunc>>,
 }
 
 impl Class {
     // Build the runtime class structure out of the ClassDecl pieces
     pub fn new(name: &str, body: &ClassBody, closure: Rc<Environment>) -> Class {
-        let mut init: Option<UnboundLoxFunc> = None;
-
-        let methods: Vec<UnboundLoxFunc> = body
-            .methods
-            .iter()
-            .map(|fun_decl| {
-                let is_init = fun_decl.name == INIT_METHOD_NAME;
-                let unbound = UnboundLoxFunc {
-                    name: fun_decl.name.clone(),
-                    parameters: fun_decl.parameters.clone(),
-                    body: fun_decl.body.as_ref().clone(),
-                    is_init,
-                };
-                if is_init {
-                    init = Some(unbound.clone())
-                }
-                unbound
-            })
-            .collect();
-
-        let mut class_methods = HashMap::new();
-        for member in body.class_methods.iter() {
+        let mut methods = HashMap::new();
+        for method in body.methods.iter() {
             let func = Rc::new(LoxFunc {
-                name: member.name.clone(),
-                parameters: member.parameters.clone(),
-                body: member.body.as_ref().clone(),
+                name: method.name.clone(),
+                parameters: method.parameters.clone(),
+                body: method.body.as_ref().clone(),
                 closure: closure.clone(),
                 is_init: false,
             });
-            class_methods.insert(member.name.clone(), func);
+            methods.insert(method.name.clone(), func);
+        }
+
+        let mut class_methods = HashMap::new();
+        for method in body.class_methods.iter() {
+            let func = Rc::new(LoxFunc {
+                name: method.name.clone(),
+                parameters: method.parameters.clone(),
+                body: method.body.as_ref().clone(),
+                closure: closure.clone(),
+                is_init: false,
+            });
+            class_methods.insert(method.name.clone(), func);
         }
 
         Class {
             inner: Rc::new(ClassInner {
                 name: name.to_string(),
-                init,
                 methods,
                 class_methods,
             }),
@@ -73,7 +69,7 @@ impl Class {
     }
 
     pub fn arity(&self) -> u8 {
-        match &self.inner.init {
+        match &self.inner.methods.get(INIT_METHOD_NAME) {
             Some(init) => init.arity(),
             None => 0u8,
         }
@@ -84,30 +80,16 @@ impl Class {
         interpreter: &mut Interpreter,
         args: Vec<Value>,
     ) -> Result<Value, RuntimeError> {
-        let fields = Rc::new(RefCell::new(HashMap::new()));
-
-        let instance = Value::Instance(Instance {
-            fields: fields.clone(),
+        let instance = Instance {
+            fields: Rc::new(RefCell::new(HashMap::new())),
             class: self.clone(),
-        });
+        };
 
-        let closure = interpreter.current_env_closure().open_scope();
-        closure.bind("this", Some(instance.clone()));
-
-        for method in self.inner.methods.iter() {
-            let bound_method = Rc::new(method.bind(closure.clone()));
-            fields
-                .borrow_mut()
-                .insert(bound_method.name.clone(), Value::Callable(bound_method));
+        if let Some(init) = self.inner.methods.get(INIT_METHOD_NAME) {
+            _ = init.bind(instance.clone()).call(interpreter, args)?;
         }
 
-        if let Some(init) = &self.inner.init {
-            // The init function should also have been part of the bound methods above, but we can just bind it again
-            let bound_init = init.bind(closure.clone());
-            _ = bound_init.call(&mut Interpreter::new_from_closure(closure.clone()), args)?;
-        }
-
-        Ok(instance)
+        Ok(Value::Instance(instance))
     }
 }
 
