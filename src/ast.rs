@@ -27,6 +27,7 @@ pub enum Stmt {
     FunDecl(FunDecl),
     ClassDecl {
         name: String,
+        parent: Option<Expr>,
         body: ClassBody,
     },
     Expr(Expr),
@@ -63,7 +64,7 @@ pub enum Expr {
     },
     Group(Box<Expr>),
     Literal(Literal),
-    Identifier {
+    Variable {
         name: String,
         // How many scopes upwards to resolve
         // This may be a precise number for things in global scope, however, certain bits like global variables are not
@@ -110,7 +111,7 @@ impl<'a> Display for Expr {
                 if_true,
                 if_false,
             } => write!(f, "(? {} : {} {})", test, if_true, if_false),
-            Expr::Identifier {
+            Expr::Variable {
                 name,
                 scope_distance: _,
             } => write!(f, "(ident {})", name),

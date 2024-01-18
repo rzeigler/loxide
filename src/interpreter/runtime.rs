@@ -16,7 +16,7 @@ use super::{
 };
 use crate::{
     ast::{BinaryOp, Expr, FunDecl, Literal, LogicalOp, Program, Stmt, UnaryOp},
-    scanner::THIS_LITERAL,
+    scanner::{SUPER_LITERAL, THIS_LITERAL},
 };
 
 #[derive(Error, Debug)]
@@ -400,10 +400,26 @@ impl Interpreter {
                 };
                 return Err(UnwindCause::Return(v));
             }
-            Stmt::ClassDecl { name, body } => {
-                let class = Class::new(name, body, self.current_env_closure());
-                // TODO: construct the methods
+            Stmt::ClassDecl { name, parent, body } => {
+                let mut closure = self.current_env_closure();
+
+                let parent_class = if let Some(parent_expr) = parent {
+                    if let Value::Class(parent_class) = self.eval(parent_expr)? {
+                        closure = closure.open_scope();
+                        closure.bind(SUPER_LITERAL, Some(Value::Class(parent_class.clone())));
+                        Some(parent_class)
+                    } else {
+                        return Err(UnwindCause::Error(RuntimeError::TypeError(
+                            "parent is not a class",
+                        )));
+                    }
+                } else {
+                    None
+                };
+
+                let class = Class::new(name, body, parent_class, closure);
                 self.environment.bind(&name, Some(Value::Class(class)));
+
                 Ok(Value::Nil)
             }
         }
@@ -462,7 +478,7 @@ impl Interpreter {
             Expr::Literal(Literal::String(s)) => Ok(Value::String(Rc::new(s.to_string()))),
             Expr::Literal(Literal::Boolean(b)) => Ok(Value::Bool(*b)),
             Expr::Literal(Literal::Nil) => Ok(Value::Nil),
-            Expr::Identifier {
+            Expr::Variable {
                 name,
                 scope_distance,
             } => self
@@ -746,12 +762,13 @@ impl Resolver {
                 self.define(&identifier);
                 Ok(())
             }
-            Stmt::ClassDecl { name, body } => {
+            Stmt::ClassDecl { name, parent, body } => {
                 self.define(&name);
 
                 for method in body.class_methods.iter_mut() {
                     self.define(&method.name);
                     self.current_function = Some(FunctionType::Function);
+
                     self.begin_scope();
                     for param in method.parameters.iter() {
                         self.define(param);
@@ -760,6 +777,10 @@ impl Resolver {
                     self.end_scope();
                 }
 
+                if parent.is_some() {
+                    self.begin_scope();
+                    self.define(SUPER_LITERAL);
+                }
                 // The class body introduces an implicit scope ...
                 self.begin_scope();
                 // ... which contains this
@@ -786,6 +807,10 @@ impl Resolver {
                 self.current_class = CurrentClass::None;
 
                 self.end_scope();
+
+                if parent.is_some() {
+                    self.end_scope();
+                }
                 Ok(())
             }
         }
@@ -813,7 +838,7 @@ impl Resolver {
                 Ok(())
             }
             Expr::Group(expr) => self.resolve_expr(expr),
-            Expr::Identifier {
+            Expr::Variable {
                 name,
                 scope_distance,
             } => {

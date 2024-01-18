@@ -130,6 +130,7 @@ pub enum Keyword {
 }
 
 pub const THIS_LITERAL: &'static str = "this";
+pub const SUPER_LITERAL: &'static str = "super";
 
 const KEYWORD_LITERAL_TO_SYMBOL: [(&'static str, Keyword); 17] = [
     ("and", Keyword::And),
@@ -143,7 +144,7 @@ const KEYWORD_LITERAL_TO_SYMBOL: [(&'static str, Keyword); 17] = [
     ("or", Keyword::Or),
     ("print", Keyword::Print),
     ("return", Keyword::Return),
-    ("super", Keyword::Super),
+    (SUPER_LITERAL, Keyword::Super),
     (THIS_LITERAL, Keyword::This),
     ("true", Keyword::True),
     ("var", Keyword::Var),

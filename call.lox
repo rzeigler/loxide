@@ -1,2 +1,1 @@
-print clock();
-print parse_num("12");
+print system_time();

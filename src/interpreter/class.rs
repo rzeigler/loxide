@@ -26,11 +26,17 @@ pub struct ClassInner {
     pub name: String,
     pub methods: HashMap<String, Rc<LoxFunc>>,
     pub class_methods: HashMap<String, Rc<LoxFunc>>,
+    pub superclass: Option<Class>,
 }
 
 impl Class {
     // Build the runtime class structure out of the ClassDecl pieces
-    pub fn new(name: &str, body: &ClassBody, closure: Rc<Environment>) -> Class {
+    pub fn new(
+        name: &str,
+        body: &ClassBody,
+        superclass: Option<Class>,
+        closure: Rc<Environment>,
+    ) -> Class {
         let mut methods = HashMap::new();
         for method in body.methods.iter() {
             let func = Rc::new(LoxFunc {
@@ -59,6 +65,7 @@ impl Class {
             inner: Rc::new(ClassInner {
                 name: name.to_string(),
                 methods,
+                superclass,
                 class_methods,
             }),
         }

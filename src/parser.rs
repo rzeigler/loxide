@@ -261,6 +261,16 @@ where
         reporter.report(pos, "class bodies start with '{'");
         return Err(ParsePanic {});
     }
+
+    let parent = if scanner.next_if(|next| *next == Symbol::Less).is_some() {
+        Some(Expr::Variable {
+            name: expect_identifier(reporter, scanner)?.to_string(),
+            scope_distance: None,
+        })
+    } else {
+        None
+    };
+
     let mut methods = Vec::new();
     let mut static_methods = Vec::new();
     // Class methods don't have fun prefix
@@ -283,6 +293,7 @@ where
     }
     Ok(Stmt::ClassDecl {
         name: name.to_string(),
+        parent,
         body: ClassBody {
             methods,
             class_methods: static_methods,
@@ -516,7 +527,7 @@ where
         let rhs = Box::new(logical_or(reporter, scanner)?);
         match expr {
             // A valid assignment target
-            Expr::Identifier {
+            Expr::Variable {
                 name,
                 scope_distance: _,
             } => Ok(Expr::Assignment {
@@ -776,7 +787,7 @@ where
                         }
                     }
                 }
-                TokenType::Identifier(ident) => Expr::Identifier {
+                TokenType::Identifier(ident) => Expr::Variable {
                     name: ident.to_string(),
                     scope_distance: None,
                 },
