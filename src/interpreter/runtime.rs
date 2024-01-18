@@ -188,6 +188,7 @@ impl Sub for Value {
     }
 }
 
+#[derive(Debug)]
 pub struct Environment {
     bindings: RefCell<HashMap<String, Option<Value>>>, // None indicates name defined but unbound
     parent: Option<Rc<Environment>>,
@@ -499,6 +500,35 @@ impl Interpreter {
                     .unwrap();
                 Ok(this)
             }
+            Expr::Super {
+                method,
+                scope_distance,
+            } => {
+                if let Value::Instance(this) = self
+                    .environment
+                    .lookup(THIS_LITERAL, scope_distance.unwrap() - 1)
+                    .unwrap()
+                {
+                    // We need to bind the this as well
+                    if let Value::Class(superclass) = self
+                        .environment
+                        .lookup(SUPER_LITERAL, scope_distance.unwrap())
+                        .unwrap()
+                    {
+                        if let Some(method) = superclass.get_method(method) {
+                            Ok(Value::Callable(Rc::new(method.bind(this))))
+                        } else {
+                            Err(UnwindCause::Error(RuntimeError::UndefinedVariable(
+                                format!("undefined function: {}", method),
+                            )))
+                        }
+                    } else {
+                        unreachable!()
+                    }
+                } else {
+                    unreachable!();
+                }
+            }
             Expr::Assignment {
                 target,
                 scope_distance,
@@ -777,7 +807,8 @@ impl Resolver {
                     self.end_scope();
                 }
 
-                if parent.is_some() {
+                if let Some(parent) = parent {
+                    self.resolve_expr(parent)?;
                     self.begin_scope();
                     self.define(SUPER_LITERAL);
                 }
@@ -852,6 +883,19 @@ impl Resolver {
                     ))
                 } else {
                     *scope_distance = Some(self.resolve_identifier(THIS_LITERAL)?);
+                    Ok(())
+                }
+            }
+            Expr::Super {
+                method: _,
+                scope_distance,
+            } => {
+                if self.current_class == CurrentClass::None {
+                    Err(RuntimeError::UndefinedVariable(
+                        "this (outside of class)".to_string(),
+                    ))
+                } else {
+                    *scope_distance = Some(self.resolve_identifier(SUPER_LITERAL)?);
                     Ok(())
                 }
             }

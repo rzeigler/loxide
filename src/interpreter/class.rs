@@ -18,7 +18,12 @@ pub struct Class {
 
 impl Class {
     pub fn get_method(&self, method: &str) -> Option<Rc<LoxFunc>> {
-        self.inner.methods.get(method).cloned()
+        self.inner.methods.get(method).cloned().or_else(|| {
+            self.inner
+                .superclass
+                .as_ref()
+                .and_then(|superclass| superclass.get_method(method))
+        })
     }
 }
 

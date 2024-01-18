@@ -257,10 +257,6 @@ where
     Reporter: ErrorReporter,
 {
     let name = expect_identifier(reporter, scanner)?;
-    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftBrace) {
-        reporter.report(pos, "class bodies start with '{'");
-        return Err(ParsePanic {});
-    }
 
     let parent = if scanner.next_if(|next| *next == Symbol::Less).is_some() {
         Some(Expr::Variable {
@@ -270,6 +266,11 @@ where
     } else {
         None
     };
+
+    if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftBrace) {
+        reporter.report(pos, "class bodies start with '{'");
+        return Err(ParsePanic {});
+    }
 
     let mut methods = Vec::new();
     let mut static_methods = Vec::new();
@@ -764,6 +765,17 @@ where
                 TokenType::Keyword(Keyword::True) => Expr::Literal(Literal::Boolean(true)),
                 TokenType::Keyword(Keyword::False) => Expr::Literal(Literal::Boolean(false)),
                 TokenType::Keyword(Keyword::Nil) => Expr::Literal(Literal::Nil),
+                TokenType::Keyword(Keyword::Super) => {
+                    if let Err(pos) = expect_next_symbol(scanner, Symbol::Dot) {
+                        reporter.report(pos, "expect . after super");
+                        return Err(ParsePanic {});
+                    }
+                    let method = expect_identifier(reporter, scanner)?;
+                    Expr::Super {
+                        method: method.to_string(),
+                        scope_distance: None,
+                    }
+                }
                 TokenType::String(string) => Expr::Literal(Literal::String(string.to_string())),
                 TokenType::Number(number) => Expr::Literal(Literal::Number(OrderedFloat(number))),
                 TokenType::Symbol(Symbol::LeftParen) => {
