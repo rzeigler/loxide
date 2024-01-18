@@ -1,6 +1,10 @@
 class A {
+  init() {
+    this.boop = "bop";
+  }
+
   method() {
-    print "A method";
+    print "A method" + this.boop;
   }
 }
 
@@ -14,7 +18,12 @@ class B < A {
   }
 }
 
-class C < B {}
+class C < B {
+  init() {
+    super.init();
+    this.boop = "bazinga";
+  }
+}
 
 C().test();
 C().method();

@@ -504,6 +504,8 @@ impl Interpreter {
                 method,
                 scope_distance,
             } => {
+                // We assume that this is always in the scope above super
+                // We need a this instance to bind
                 if let Value::Instance(this) = self
                     .environment
                     .lookup(THIS_LITERAL, scope_distance.unwrap() - 1)
