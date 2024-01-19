@@ -2,6 +2,7 @@ mod builtin;
 mod callable;
 mod class;
 mod runtime;
+mod stdlib;
 
 pub use builtin::populate_builtin;
 pub use runtime::{Interpreter, Value};
