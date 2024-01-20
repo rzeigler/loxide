@@ -34,7 +34,7 @@ fn main() -> Result<()> {
         let mut script = String::new();
         file.read_to_string(&mut script)
             .context("Unable to read script file")?;
-        run(&mut stock_interpreter(), &script, false);
+        run(&mut stock_interpreter()?, &script, false);
     } else {
         run_prompt()?;
     }
@@ -45,7 +45,7 @@ fn run_prompt() -> Result<()> {
     let stdin = std::io::stdin().lock();
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
-    let mut interpreter = stock_interpreter();
+    let mut interpreter = stock_interpreter()?;
     loop {
         {
             let mut stdout = stdout().lock();
