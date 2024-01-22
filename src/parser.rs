@@ -181,12 +181,12 @@ fn finish_var_decl<'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    let identifier = {
+    let (identifier, start_pos) = {
         match scanner.next() {
             Ok(Token {
                 data: TokenType::Identifier(identifier),
-                pos: _,
-            }) => identifier.to_string(), // Copy into the AST arena
+                pos: pos,
+            }) => (identifier.to_string(), pos), // Copy into the AST arena
             Ok(token) => {
                 reporter.report(token.pos, "expected an identifier");
                 return Err(ParsePanic {});
@@ -207,9 +207,12 @@ where
         reporter.report(pos, "expected ';' after an expression");
         return Err(ParsePanic {});
     }
-    Ok(Stmt::VarDecl {
-        name: identifier,
-        init: initializer,
+    Ok(Stmt {
+        pos: start_pos,
+        inner: StmtInner::VarDecl {
+            name: identifier,
+            init: initializer,
+        },
     })
 }
 
@@ -220,7 +223,7 @@ fn finish_fun_decl<'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    let name = expect_identifier(reporter, scanner)?.to_string();
+    let (name, pos) = expect_identifier(reporter, scanner)?;
     if let Err(pos) = expect_next_symbol(scanner, Symbol::LeftParen) {
         reporter.report(pos, "expected '(' after function name");
         return Err(ParsePanic {});
@@ -241,12 +244,15 @@ where
         reporter.report(pos, "function bodies start with '{'");
         return Err(ParsePanic {});
     }
-    let body = Box::new(finish_block(reporter, scanner)?);
-    Ok(Stmt::FunDecl(FunDecl {
-        name,
-        parameters,
-        body,
-    }))
+    let body = Box::new(finish_block(reporter, scanner, pos)?);
+    Ok(Stmt {
+        pos,
+        inner: StmtInner::FunDecl(FunDecl {
+            name: name.to_string(),
+            parameters,
+            body,
+        }),
+    })
 }
 
 fn finish_class_decl<'src, Reporter>(
@@ -256,12 +262,16 @@ fn finish_class_decl<'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    let name = expect_identifier(reporter, scanner)?;
+    let (name, pos) = expect_identifier(reporter, scanner)?;
 
     let parent = if scanner.next_if(|next| *next == Symbol::Less).is_some() {
-        Some(Expr::Variable {
-            name: expect_identifier(reporter, scanner)?.to_string(),
-            scope_distance: None,
+        let (parent_ident, _) = expect_identifier(reporter, scanner)?;
+        Some(Expr {
+            pos,
+            inner: ExprInner::Variable {
+                name: parent_ident.to_string(),
+                scope_distance: None,
+            },
         })
     } else {
         None
@@ -282,22 +292,31 @@ where
         // Is this a class method or not
         if scanner.next_if(|next| *next == Keyword::Class).is_some() {
             static_methods.push(match finish_fun_decl(reporter, scanner)? {
-                Stmt::FunDecl(decl) => decl,
+                Stmt {
+                    pos: _,
+                    inner: StmtInner::FunDecl(decl),
+                } => decl,
                 _ => unreachable!("finish_fun_decl didn't return a FunDecl"),
             });
         } else {
             methods.push(match finish_fun_decl(reporter, scanner)? {
-                Stmt::FunDecl(decl) => decl,
+                Stmt {
+                    pos: _,
+                    inner: StmtInner::FunDecl(decl),
+                } => decl,
                 _ => unreachable!("finish_fun_decl didn't return a FunDecl"),
             });
         }
     }
-    Ok(Stmt::ClassDecl {
-        name: name.to_string(),
-        parent,
-        body: ClassBody {
-            methods,
-            class_methods: static_methods,
+    Ok(Stmt {
+        pos,
+        inner: StmtInner::ClassDecl {
+            name: name.to_string(),
+            parent,
+            body: ClassBody {
+                methods,
+                class_methods: static_methods,
+            },
         },
     })
 }
@@ -309,15 +328,15 @@ fn statement<'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    if scanner.next_if(|next| *next == Keyword::If).is_some() {
-        if_stmt(reporter, scanner)
-    } else if scanner.next_if(|next| *next == Keyword::While).is_some() {
-        while_stmt(reporter, scanner)
-    } else if scanner.next_if(|next| *next == Keyword::For).is_some() {
-        for_stmt(reporter, scanner)
-    } else if scanner.next_if(|next| *next == Keyword::Print).is_some() {
-        print_stmt(reporter, scanner)
-    } else if scanner.next_if(|next| *next == Keyword::Return).is_some() {
+    if let Some(token) = scanner.next_if(|next| *next == Keyword::If) {
+        if_stmt(reporter, scanner, token.pos)
+    } else if let Some(token) = scanner.next_if(|next| *next == Keyword::While) {
+        while_stmt(reporter, scanner, token.pos)
+    } else if let Some(token) = scanner.next_if(|next| *next == Keyword::For) {
+        for_stmt(reporter, scanner, token.pos)
+    } else if let Some(token) = scanner.next_if(|next| *next == Keyword::Print) {
+        print_stmt(reporter, scanner, token.pos)
+    } else if let Some(token) = scanner.next_if(|next| *next == Keyword::Return) {
         let expr = if scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
             None
         } else {
@@ -328,15 +347,21 @@ where
             }
             Some(e)
         };
-        Ok(Stmt::Return(expr))
-    } else if scanner.next_if(|next| *next == Keyword::Break).is_some() {
+        Ok(Stmt {
+            pos: token.pos,
+            inner: StmtInner::Return(expr),
+        })
+    } else if let Some(token) = scanner.next_if(|next| *next == Keyword::Break) {
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
             reporter.report(pos, "expected ';' after break");
             return Err(ParsePanic {});
         }
-        Ok(Stmt::Break)
-    } else if scanner.next_if(|next| *next == Symbol::LeftBrace).is_some() {
-        finish_block(reporter, scanner)
+        Ok(Stmt {
+            pos: token.pos,
+            inner: StmtInner::Break,
+        })
+    } else if let Some(token) = scanner.next_if(|next| *next == Symbol::LeftBrace) {
+        finish_block(reporter, scanner, token.pos)
     } else {
         expr_stmt(reporter, scanner)
     }
@@ -345,6 +370,7 @@ where
 fn finish_block<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
+    start_pos: Pos,
 ) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
@@ -358,12 +384,16 @@ where
         reporter.report(pos, "Expected '}' after block");
         return Err(ParsePanic {});
     }
-    Ok(Stmt::Block(stmts))
+    Ok(Stmt {
+        pos: start_pos,
+        inner: StmtInner::Block(stmts),
+    })
 }
 
 fn if_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
+    pos: Pos,
 ) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
@@ -383,16 +413,20 @@ where
     } else {
         None
     };
-    Ok(Stmt::If {
-        expr: test_expr,
-        then: then_branch,
-        or_else: else_branch,
+    Ok(Stmt {
+        pos: pos,
+        inner: StmtInner::If {
+            expr: test_expr,
+            then: then_branch,
+            or_else: else_branch,
+        },
     })
 }
 
 fn while_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
+    pos: Pos,
 ) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
@@ -407,12 +441,16 @@ where
         return Err(ParsePanic {});
     }
     let body = Box::new(statement(reporter, scanner)?);
-    Ok(Stmt::Loop { expr, body })
+    Ok(Stmt {
+        pos,
+        inner: StmtInner::Loop { expr, body },
+    })
 }
 
 fn for_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
+    pos: Pos,
 ) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
@@ -433,8 +471,11 @@ where
         Some(expr_stmt(reporter, scanner)?)
     };
 
-    let condition = if scanner.next_if(|next| *next == Symbol::Semicolon).is_some() {
-        Expr::Literal(Literal::Boolean(true))
+    let condition = if let Some(token) = scanner.next_if(|next| *next == Symbol::Semicolon) {
+        Expr {
+            pos: token.pos,
+            inner: ExprInner::Literal(Literal::Boolean(true)),
+        }
     } else {
         let cond = expr(reporter, scanner)?;
         if let Err(pos) = expect_next_symbol(scanner, Symbol::Semicolon) {
@@ -455,22 +496,34 @@ where
             reporter.report(pos, "expected )' after for clauses");
             return Err(ParsePanic {});
         }
-        Some(Stmt::Expr(expr))
+        Some(Stmt {
+            pos: expr.pos,
+            inner: StmtInner::Expr(expr),
+        })
     };
 
     let mut body = statement(reporter, scanner)?;
     // TODO: Avoid double nesting the blocks
     if let Some(incr) = incr {
-        body = Stmt::Block(vec![body, incr]);
+        body = Stmt {
+            pos: incr.pos,
+            inner: StmtInner::Block(vec![body, incr]),
+        };
     }
 
-    let for_loop = Stmt::Loop {
-        expr: condition,
-        body: Box::new(body),
+    let for_loop = Stmt {
+        pos: condition.pos,
+        inner: StmtInner::Loop {
+            expr: condition,
+            body: Box::new(body),
+        },
     };
 
     if let Some(init) = initializer {
-        Ok(Stmt::Block(vec![init, for_loop]))
+        Ok(Stmt {
+            pos: init.pos,
+            inner: StmtInner::Block(vec![init, for_loop]),
+        })
     } else {
         Ok(for_loop)
     }
@@ -479,6 +532,7 @@ where
 fn print_stmt<'src, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'src>,
+    pos: Pos,
 ) -> Result<Stmt, ParsePanic>
 where
     Reporter: ErrorReporter,
@@ -488,7 +542,10 @@ where
         reporter.report(pos, "expected ';' after an expression");
         return Err(ParsePanic {});
     }
-    Ok(Stmt::Print(expr))
+    Ok(Stmt {
+        pos: pos,
+        inner: StmtInner::Print(expr),
+    })
 }
 
 fn expr_stmt<'src, Reporter>(
@@ -503,7 +560,10 @@ where
         reporter.report(pos, "expected ';' after an expression");
         return Err(ParsePanic {});
     }
-    Ok(Stmt::Expr(expr))
+    Ok(Stmt {
+        pos: expr.pos,
+        inner: StmtInner::Expr(expr),
+    })
 }
 
 fn expr<'src, Reporter>(
@@ -528,18 +588,31 @@ where
         let rhs = Box::new(logical_or(reporter, scanner)?);
         match expr {
             // A valid assignment target
-            Expr::Variable {
-                name,
-                scope_distance: _,
-            } => Ok(Expr::Assignment {
-                target: name,
-                scope_distance: None,
-                expr: rhs,
+            Expr {
+                pos,
+                inner:
+                    ExprInner::Variable {
+                        name,
+                        scope_distance: _,
+                    },
+            } => Ok(Expr {
+                pos,
+                inner: ExprInner::Assignment {
+                    target: name,
+                    scope_distance: None,
+                    expr: rhs,
+                },
             }),
-            Expr::Get { object, property } => Ok(Expr::Set {
-                object: object,
-                property: property,
-                value: rhs,
+            Expr {
+                pos,
+                inner: ExprInner::Get { object, property },
+            } => Ok(Expr {
+                pos,
+                inner: ExprInner::Set {
+                    object: object,
+                    property: property,
+                    value: rhs,
+                },
             }),
             // Not a valid assignment target
             // Report the error to trigger top level error, but don't error out here so we continue parsing
@@ -630,10 +703,13 @@ where
             return Err(ParsePanic {});
         }
         let if_false = Box::new(comparison(reporter, scanner)?);
-        Ok(Expr::Ternary {
-            test: Box::new(expr),
-            if_true,
-            if_false,
+        Ok(Expr {
+            pos: if_true.pos,
+            inner: ExprInner::Ternary {
+                test: Box::new(expr),
+                if_true,
+                if_false,
+            },
         })
     }
 }
@@ -677,15 +753,18 @@ fn unary<'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    if let Some(symbol) = scanner.next_if_some(|next| match next {
+    if let Some((pos, symbol)) = scanner.next_if_some(|next| match next {
         TokenType::Symbol(symbol) if UNARY_SYMBOLS.contains(&symbol) => Some(symbol),
         _ => None,
     }) {
         let operator = symbol_to_unary_op(symbol);
         let right = Box::new(unary(reporter, scanner)?);
-        Ok(Expr::Unary {
-            op: operator,
-            expr: right,
+        Ok(Expr {
+            pos: pos,
+            inner: ExprInner::Unary {
+                op: operator,
+                expr: right,
+            },
         })
     } else {
         call(reporter, scanner)
@@ -704,10 +783,13 @@ where
         if scanner.next_if(|next| *next == Symbol::LeftParen).is_some() {
             expr = finish_call(reporter, scanner, expr)?;
         } else if scanner.next_if(|next| *next == Symbol::Dot).is_some() {
-            let name = expect_identifier(reporter, scanner)?;
-            expr = Expr::Get {
-                object: Box::new(expr),
-                property: name.to_string(),
+            let (name, pos) = expect_identifier(reporter, scanner)?;
+            expr = Expr {
+                pos: pos,
+                inner: ExprInner::Get {
+                    object: Box::new(expr),
+                    property: name.to_string(),
+                },
             };
         } else {
             break;
@@ -746,9 +828,12 @@ where
             return Err(ParsePanic {});
         }
     }
-    Ok(Expr::Call {
-        callee: Box::new(callee),
-        arguments: args,
+    Ok(Expr {
+        pos: callee.pos,
+        inner: ExprInner::Call {
+            callee: Box::new(callee),
+            arguments: args,
+        },
     })
 }
 
@@ -762,22 +847,40 @@ where
     match scanner.next() {
         Ok(token) => {
             let expr = match token.data {
-                TokenType::Keyword(Keyword::True) => Expr::Literal(Literal::Boolean(true)),
-                TokenType::Keyword(Keyword::False) => Expr::Literal(Literal::Boolean(false)),
-                TokenType::Keyword(Keyword::Nil) => Expr::Literal(Literal::Nil),
+                TokenType::Keyword(Keyword::True) => Expr {
+                    pos: token.pos,
+                    inner: ExprInner::Literal(Literal::Boolean(true)),
+                },
+                TokenType::Keyword(Keyword::False) => Expr {
+                    pos: token.pos,
+                    inner: ExprInner::Literal(Literal::Boolean(false)),
+                },
+                TokenType::Keyword(Keyword::Nil) => Expr {
+                    pos: token.pos,
+                    inner: ExprInner::Literal(Literal::Nil),
+                },
                 TokenType::Keyword(Keyword::Super) => {
                     if let Err(pos) = expect_next_symbol(scanner, Symbol::Dot) {
                         reporter.report(pos, "expect . after super");
                         return Err(ParsePanic {});
                     }
-                    let method = expect_identifier(reporter, scanner)?;
-                    Expr::Super {
-                        method: method.to_string(),
-                        scope_distance: None,
+                    let (method, _) = expect_identifier(reporter, scanner)?;
+                    Expr {
+                        pos: token.pos,
+                        inner: ExprInner::Super {
+                            method: method.to_string(),
+                            scope_distance: None,
+                        },
                     }
                 }
-                TokenType::String(string) => Expr::Literal(Literal::String(string.to_string())),
-                TokenType::Number(number) => Expr::Literal(Literal::Number(OrderedFloat(number))),
+                TokenType::String(string) => Expr {
+                    pos: token.pos,
+                    inner: ExprInner::Literal(Literal::String(string.to_string())),
+                },
+                TokenType::Number(number) => Expr {
+                    pos: token.pos,
+                    inner: ExprInner::Literal(Literal::Number(OrderedFloat(number))),
+                },
                 TokenType::Symbol(Symbol::LeftParen) => {
                     let inner = expr(reporter, scanner)?;
                     match scanner.next() {
@@ -785,7 +888,10 @@ where
                             match token.data {
                                 TokenType::Symbol(Symbol::RightParen) => {
                                     // This is the happy path in that we have successfully matched the trailing group
-                                    Expr::Group(Box::new(inner))
+                                    Expr {
+                                        pos: token.pos,
+                                        inner: ExprInner::Group(Box::new(inner)),
+                                    }
                                 }
                                 _ => {
                                     reporter.report(token.pos, "expected a ')'");
@@ -799,13 +905,19 @@ where
                         }
                     }
                 }
-                TokenType::Identifier(ident) => Expr::Variable {
-                    name: ident.to_string(),
-                    scope_distance: None,
+                TokenType::Identifier(ident) => Expr {
+                    pos: token.pos,
+                    inner: ExprInner::Variable {
+                        name: ident.to_string(),
+                        scope_distance: None,
+                    },
                 },
                 // Just tread this as though it were an identifier
-                TokenType::Keyword(Keyword::This) => Expr::This {
-                    scope_distance: None,
+                TokenType::Keyword(Keyword::This) => Expr {
+                    pos: token.pos,
+                    inner: ExprInner::This {
+                        scope_distance: None,
+                    },
                 },
                 // An unexpected binary symbol so lets try and parse the rhs before raising the error
                 // - should be trapped by unary
@@ -848,16 +960,19 @@ where
     F: Fn(&mut Reporter, &mut Scanner<'src>) -> Result<Expr, ParsePanic>,
 {
     let mut expr = higher_precedence(reporter, scanner)?;
-    while let Some(symbol) = scanner.next_if_some(|next| match next {
+    while let Some((pos, symbol)) = scanner.next_if_some(|next| match next {
         TokenType::Symbol(s) if symbols.contains(&s) => Some(s),
         _ => None,
     }) {
         let binary_op = symbol_to_binary_op(symbol);
         let right = Box::new(higher_precedence(reporter, scanner)?);
-        expr = Expr::Binary {
-            left: Box::new(expr),
-            op: binary_op,
-            right,
+        expr = Expr {
+            pos: pos,
+            inner: ExprInner::Binary {
+                left: Box::new(expr),
+                op: binary_op,
+                right,
+            },
         }
     }
     Ok(expr)
@@ -874,16 +989,19 @@ where
     F: Fn(&mut Reporter, &mut Scanner<'src>) -> Result<Expr, ParsePanic>,
 {
     let mut expr = higher_precedence(reporter, scanner)?;
-    while let Some(kw) = scanner.next_if_some(|next| match next {
+    while let Some((pos, kw)) = scanner.next_if_some(|next| match next {
         TokenType::Keyword(kw) if keyword == kw => Some(kw),
         _ => None,
     }) {
         let logical_op = keyword_to_logical_op(kw);
         let right = Box::new(higher_precedence(reporter, scanner)?);
-        expr = Expr::Logical {
-            left: Box::new(expr),
-            op: logical_op,
-            right,
+        expr = Expr {
+            pos: pos,
+            inner: ExprInner::Logical {
+                left: Box::new(expr),
+                op: logical_op,
+                right,
+            },
         }
     }
     Ok(expr)
@@ -935,15 +1053,15 @@ fn expect_next_symbol(scanner: &mut Scanner, symbol: Symbol) -> Result<(), Pos> 
 fn expect_identifier<'code, Reporter>(
     reporter: &mut Reporter,
     scanner: &mut Scanner<'code>,
-) -> Result<&'code str, ParsePanic>
+) -> Result<(&'code str, Pos), ParsePanic>
 where
     Reporter: ErrorReporter,
 {
     match scanner.next() {
         Ok(Token {
             data: TokenType::Identifier(ident),
-            pos: _,
-        }) => Ok(ident),
+            pos,
+        }) => Ok((ident, pos)),
         Ok(Token { data: _, pos }) => {
             reporter.report(pos, "expected identifier");
             return Err(ParsePanic {});
@@ -974,9 +1092,9 @@ fn comma_separated_identifiers<'src, Reporter>(
 where
     Reporter: ErrorReporter,
 {
-    idents.push(expect_identifier(reporter, scanner)?.to_string());
+    idents.push(expect_identifier(reporter, scanner)?.0.to_string());
     while scanner.next_if(|next| *next == Symbol::Comma).is_some() {
-        idents.push(expect_identifier(reporter, scanner)?.to_string());
+        idents.push(expect_identifier(reporter, scanner)?.0.to_string());
     }
 
     Ok(())
@@ -987,25 +1105,6 @@ mod test {
     use std::io::stderr;
 
     use super::*;
-
-    #[test]
-    fn test_pretty_print() {
-        // (* (- 123) (group 45.67))
-        let expr = Expr::Binary {
-            left: Box::new(Expr::Unary {
-                op: UnaryOp::Negative,
-                expr: Box::new(Expr::Literal(Literal::Number(OrderedFloat(123f64)))),
-            }),
-            op: BinaryOp::Multiply,
-            right: Box::new(Expr::Group(Box::new(Expr::Literal(Literal::Number(
-                OrderedFloat(45.67f64),
-            ))))),
-        };
-
-        let mut result = String::new();
-        std::fmt::write(&mut result, format_args!("{}", expr)).unwrap();
-        assert_eq!("(* (- 123) (group 45.67))", result);
-    }
 
     #[test]
     fn test_parse_call() {

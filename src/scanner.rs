@@ -226,14 +226,14 @@ impl<'lex> Scanner<'lex> {
     /// This is useful to perform conditional peeks where we may want a limited bit of data, etc.
     /// This function cannot error, it is assumed that consumers are unintereste din errors
     ///
-    pub fn next_if_some<F, A>(&mut self, filter_map: F) -> Option<A>
+    pub fn next_if_some<F, A>(&mut self, filter_map: F) -> Option<(Pos, A)>
     where
         F: FnOnce(TokenType<'lex>) -> Option<A>,
     {
         let before = self.clone();
         if let Ok(token) = self.next() {
             if let Some(result) = filter_map(token.data) {
-                return Some(result);
+                return Some((token.pos, result));
             }
         }
         *self = before;

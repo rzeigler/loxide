@@ -2,6 +2,8 @@ use std::fmt::Display;
 
 use ordered_float::OrderedFloat;
 
+use crate::scanner::Pos;
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct Program(pub Vec<Stmt>);
 
@@ -19,7 +21,14 @@ pub struct ClassBody {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Stmt {
+pub struct Stmt {
+    // Its possible defining this pos across all statements is wasteful of space
+    pub pos: Pos,
+    pub inner: StmtInner,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StmtInner {
     VarDecl {
         name: String,
         init: Option<Expr>,
@@ -47,7 +56,15 @@ pub enum Stmt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Expr {
+pub struct Expr {
+    // Its possible defining this pos across all expr types is wasteful of space
+    pub pos: Pos,
+    pub inner: ExprInner,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+
+pub enum ExprInner {
     Ternary {
         test: Box<Expr>,
         if_true: Box<Expr>,
@@ -105,40 +122,40 @@ pub enum Expr {
 
 impl<'a> Display for Expr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Expr::Literal(lit) => write!(f, "{}", lit),
-            Expr::Group(expr) => write!(f, "(group {})", expr),
-            Expr::Unary { op, expr } => write!(f, "({} {})", op, expr),
-            Expr::Binary { left, op, right } => write!(f, "({} {} {})", op, left, right),
-            Expr::Ternary {
+        match &self.inner {
+            ExprInner::Literal(lit) => write!(f, "{}", lit),
+            ExprInner::Group(expr) => write!(f, "(group {})", expr),
+            ExprInner::Unary { op, expr } => write!(f, "({} {})", op, expr),
+            ExprInner::Binary { left, op, right } => write!(f, "({} {} {})", op, left, right),
+            ExprInner::Ternary {
                 test,
                 if_true,
                 if_false,
             } => write!(f, "(? {} : {} {})", test, if_true, if_false),
-            Expr::Variable {
+            ExprInner::Variable {
                 name,
                 scope_distance: _,
             } => write!(f, "(ident {})", name),
-            Expr::This { scope_distance: _ } => f.write_str("(this)"),
-            Expr::Super {
+            ExprInner::This { scope_distance: _ } => f.write_str("(this)"),
+            ExprInner::Super {
                 method,
                 scope_distance: _,
             } => f.write_str("(super method)"),
-            Expr::Assignment {
+            ExprInner::Assignment {
                 target,
                 scope_distance: _,
                 expr,
             } => write!(f, "(= {} {})", target, expr),
-            Expr::Logical { left, op, right } => write!(f, "({} {} {})", op, left, right),
-            Expr::Call { callee, arguments } => {
+            ExprInner::Logical { left, op, right } => write!(f, "({} {} {})", op, left, right),
+            ExprInner::Call { callee, arguments } => {
                 write!(f, "(call {}", callee)?;
                 for arg in arguments {
                     write!(f, " {}", arg)?;
                 }
                 f.write_str(")")
             }
-            Expr::Get { object, property } => write!(f, "(get {} {})", object, property),
-            Expr::Set {
+            ExprInner::Get { object, property } => write!(f, "(get {} {})", object, property),
+            ExprInner::Set {
                 object,
                 property,
                 value,

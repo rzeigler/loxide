@@ -1,5 +1,4 @@
 mod ast;
-mod interpreter;
 mod parser;
 mod scanner;
 mod vm;
