@@ -1,5 +1,6 @@
 mod ast;
-mod parser;
+mod bytecode;
+mod compiler;
 mod scanner;
 mod vm;
 
@@ -11,19 +12,17 @@ use std::io::BufReader;
 
 use anyhow::{Context, Result};
 
-use parser::parse;
+use ast::BinaryOp;
+use bytecode::Chunk;
 use scanner::Scanner;
-use vm::BinaryOp;
-use vm::{Chunk, VM};
-
-use crate::parser::WriteErrorReporter;
+use vm::VM;
 
 fn main() -> Result<()> {
     let mut chunk = Chunk::new();
     chunk.write_constant(1.2, 1);
     chunk.write_negate(2);
     chunk.write_constant(9.0, 3);
-    chunk.write_binary_op(BinaryOp::Add, 3);
+    chunk.write_binary_op(bytecode::BinaryOp::Add, 3);
     chunk.write_return(2);
 
     let mut vm: VM<true> = VM::new();

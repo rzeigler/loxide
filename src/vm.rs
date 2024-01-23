@@ -1,11 +1,8 @@
 use std::{fmt::Debug, mem::MaybeUninit};
 
-use thiserror::Error;
+use anyhow::{anyhow, bail, Context, Result};
 
-use super::{
-    bytecode::{OpCode, Value},
-    Chunk, Error,
-};
+use crate::bytecode::{Chunk, OpCode, Value};
 
 pub struct Stack<const LIMIT: usize = 256> {
     stack: [MaybeUninit<Value>; LIMIT],
@@ -20,9 +17,9 @@ impl<const LIMIT: usize> Stack<LIMIT> {
         }
     }
 
-    pub fn push(&mut self, v: Value) -> Result<(), Error> {
+    pub fn push(&mut self, v: Value) -> Result<()> {
         if self.top == LIMIT {
-            Err(Error::Runtime)
+            bail!("stack limit exceeded");
         } else {
             self.stack[self.top].write(v);
             self.top += 1;
@@ -30,9 +27,9 @@ impl<const LIMIT: usize> Stack<LIMIT> {
         }
     }
 
-    pub fn pop(&mut self) -> Result<Value, Error> {
+    pub fn pop(&mut self) -> Result<Value> {
         if self.top == 0 {
-            Err(Error::Runtime)
+            bail!("stack empty");
         } else {
             let v = unsafe { self.stack[self.top - 1].assume_init() };
             self.top -= 1;
@@ -60,24 +57,24 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         VM {}
     }
 
-    pub fn interpret(&mut self, chunk: &Chunk) -> Result<(), Error> {
+    pub fn interpret(&mut self, chunk: &Chunk) -> Result<()> {
         // Diverging from the book because I'm not going to attempt to juggle pointers
         let mut ip: usize = 0;
         let mut stack: Stack<256> = Stack::new();
         self.run(chunk, &mut ip, &mut stack)
     }
 
-    fn read_inst(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<OpCode, Error> {
+    fn read_inst(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<OpCode> {
         let instruction = read_code_at_ip(chunk, *ip)?;
         *ip += 1;
         if let Some(op) = OpCode::decode(instruction) {
             Ok(op)
         } else {
-            Err(Error::Runtime)
+            bail!("unrecognized instrution");
         }
     }
 
-    fn read_constant(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<Value, Error> {
+    fn read_constant(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<Value> {
         let offset = read_code_at_ip(chunk, *ip)?;
         *ip += 1;
         read_constant(chunk, offset)
@@ -88,7 +85,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         chunk: &Chunk,
         ip: &mut usize,
         stack: &mut Stack<STACK>,
-    ) -> Result<(), Error> {
+    ) -> Result<()> {
         loop {
             if TRACE_EXEC {
                 let mut result = String::new();
@@ -123,7 +120,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 OpCode::Divide => {
                     let (l, r) = self.pop_binary_operands(stack)?;
                     if r == 0f64 {
-                        return Err(Error::Runtime);
+                        bail!("divide by zero");
                     }
                     stack.push(l / r)?;
                 }
@@ -135,21 +132,25 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
     fn pop_binary_operands<const STACK: usize>(
         &mut self,
         stack: &mut Stack<STACK>,
-    ) -> Result<(Value, Value), Error> {
+    ) -> Result<(Value, Value)> {
         let r = stack.pop()?;
         let l = stack.pop()?;
         Ok((l, r))
     }
 }
 
-fn read_code_at_ip(chunk: &Chunk, ip: usize) -> Result<u8, Error> {
-    chunk.code().get(ip).ok_or(Error::Runtime).cloned()
+fn read_code_at_ip(chunk: &Chunk, ip: usize) -> Result<u8> {
+    chunk
+        .code()
+        .get(ip)
+        .context("out of bound instruction access")
+        .cloned()
 }
 
-fn read_constant(chunk: &Chunk, offset: u8) -> Result<Value, Error> {
+fn read_constant(chunk: &Chunk, offset: u8) -> Result<Value> {
     chunk
         .constants()
         .get(usize::from(offset))
-        .ok_or(Error::Internal)
+        .context("out of bound constant access")
         .cloned()
 }
