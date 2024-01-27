@@ -1,20 +1,27 @@
+use std::fmt::Display;
+
 #[derive(Debug)]
 #[repr(u8)]
 pub enum OpCode {
-    Return,
     Constant,
+    Nil,
+    True,
+    False,
     Negate,
+    Equal,
+    Greater,
+    Less,
+    Not,
     Add,
     Subtract,
     Multiply,
     Divide,
-    // Goes last as sentinel for decoding
-    InvalidSentinel,
+    Return, // Return goes last as the sentinel for maximum opcode
 }
 
 impl OpCode {
     pub fn decode(op: u8) -> Option<OpCode> {
-        if op < OpCode::InvalidSentinel as u8 {
+        if op <= OpCode::Return as u8 {
             // SAFETY: repr(u8) and InvalidSentinel is the last value
             Some(unsafe { std::mem::transmute(op) })
         } else {
@@ -30,6 +37,9 @@ impl From<BinaryOp> for OpCode {
             BinaryOp::Subtract => OpCode::Subtract,
             BinaryOp::Multiply => OpCode::Multiply,
             BinaryOp::Divide => OpCode::Divide,
+            BinaryOp::Equal => OpCode::Equal,
+            BinaryOp::Less => OpCode::Less,
+            BinaryOp::Greater => OpCode::Greater,
         }
     }
 }
@@ -39,9 +49,61 @@ pub enum BinaryOp {
     Subtract,
     Multiply,
     Divide,
+    Equal,
+    Greater,
+    Less,
 }
 
-pub type Value = f64;
+#[derive(Debug, Clone, Copy)]
+pub enum Value {
+    Bool(bool),
+    Nil,
+    Number(f64),
+}
+
+impl Value {
+    pub fn to_bool(&self) -> bool {
+        match self {
+            Value::Bool(b) => *b,
+            Value::Nil => false,
+            _ => true,
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bool(l), Self::Bool(r)) => l == r,
+            (Self::Number(l), Self::Number(r)) => l == r,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
+}
+
+impl Eq for Value {}
+
+impl From<bool> for Value {
+    fn from(value: bool) -> Self {
+        Value::Bool(value)
+    }
+}
+
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Value::Number(value)
+    }
+}
+
+impl Display for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::Nil => f.write_str("nil"),
+            Value::Number(n) => write!(f, "{}", n),
+        }
+    }
+}
 
 pub struct Chunk {
     code: Vec<u8>,
@@ -66,6 +128,10 @@ impl Chunk {
         &self.constants
     }
 
+    pub fn lines(&self) -> &[usize] {
+        &self.lines
+    }
+
     pub fn emit_return(&mut self, line: usize) {
         self.code.push(OpCode::Return as u8);
         self.lines.push(line);
@@ -86,8 +152,24 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    pub fn emit_bool(&mut self, value: bool, line: usize) {
+        self.code
+            .push(if value { OpCode::True } else { OpCode::False } as u8);
+        self.lines.push(line);
+    }
+
+    pub fn emit_nil(&mut self, line: usize) {
+        self.code.push(OpCode::Nil as u8);
+        self.lines.push(line);
+    }
+
     pub fn emit_negate(&mut self, line: usize) {
         self.code.push(OpCode::Negate as u8);
+        self.lines.push(line);
+    }
+
+    pub fn emit_not(&mut self, line: usize) {
+        self.code.push(OpCode::Not as u8);
         self.lines.push(line);
     }
 
@@ -121,15 +203,15 @@ impl Chunk {
             // Nicely pad the result string
             result.push_str(&format!("{:<10} ", &format!("{:?}", op)));
             match op {
-                OpCode::Return => self.simple_inst(offset),
-                OpCode::Constant => self.constant_inst(result, offset),
-                OpCode::Negate => self.simple_inst(offset),
+                OpCode::Negate | OpCode::Not => self.simple_inst(offset),
+                OpCode::True | OpCode::False => self.simple_inst(offset),
+                OpCode::Nil => self.simple_inst(offset),
+                OpCode::Less | OpCode::Greater | OpCode::Equal => self.simple_inst(offset),
                 OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide => {
                     self.simple_inst(offset)
                 }
-                OpCode::InvalidSentinel => {
-                    unreachable!()
-                }
+                OpCode::Constant => self.constant_inst(result, offset),
+                OpCode::Return => self.simple_inst(offset),
             }
         } else {
             println!("INVALID");

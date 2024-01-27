@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::{
-    bytecode::BinaryOp,
-    reporter::{self, Reporter},
+    bytecode::{BinaryOp, Value},
+    reporter::Reporter,
     scanner::{Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
 
@@ -59,7 +59,7 @@ where
     }
 }
 
-struct CompilePanic {}
+pub(crate) struct CompilePanic {}
 
 const COMPILE_PANIC: CompilePanic = CompilePanic {};
 
@@ -97,18 +97,22 @@ where
 {
     match scanner.next() {
         Ok(Token(TokenType::Symbol(sym), pos)) => {
-            compile_precedence(error, chunk, scanner, unary_prec(sym))?;
-            match sym {
-                Symbol::Minus => chunk.emit_negate(pos.line),
-                Symbol::BangEqual => todo!(),
-                Symbol::LeftParen => {
-                    compile_precedence(error, chunk, scanner, 0)?;
-                    expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
+            if sym == Symbol::LeftParen {
+                compile_precedence(error, chunk, scanner, 0)?;
+                expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
+            } else {
+                compile_precedence(error, chunk, scanner, unary_prec(sym))?;
+                match sym {
+                    Symbol::Minus => chunk.emit_negate(pos.line),
+                    Symbol::Bang => chunk.emit_not(pos.line),
+                    s => return error.report(pos, &format!("not a unary symbol: {}", s)),
                 }
-                s => return error.report(pos, &format!("not a unary symbol: {}", s)),
             }
         }
-        Ok(Token(TokenType::Number(num), pos)) => chunk.emit_constant(num, pos.line),
+        Ok(Token(TokenType::Number(num), pos)) => chunk.emit_constant(num.into(), pos.line),
+        Ok(Token(TokenType::Keyword(Keyword::True), pos)) => chunk.emit_bool(true, pos.line),
+        Ok(Token(TokenType::Keyword(Keyword::False), pos)) => chunk.emit_bool(false, pos.line),
+        Ok(Token(TokenType::Keyword(Keyword::Nil), pos)) => chunk.emit_nil(pos.line),
         Err(e) => {
             return error.report(e.pos, "unrecognized token");
         }
@@ -122,13 +126,13 @@ where
                 _ = scanner.next();
                 return error.report(e.pos, "unrecognized token");
             }
-            Ok(Token(token, pos)) => match binary_prec(token.clone()) {
+            Ok(token) => match binary_prec(token.0.clone()) {
                 None => break,
                 Some(prec) if min_precedence > prec => break,
                 Some(prec) => {
                     _ = scanner.next();
                     compile_precedence(error, chunk, scanner, prec + 1)?;
-                    chunk.emit_binary_op(token_to_binary_op(token), pos.line);
+                    write_chunk_binary_ops(token, chunk);
                 }
             },
         }
@@ -192,13 +196,29 @@ fn binary_prec(token: TokenType) -> Option<u8> {
     }
 }
 
-fn token_to_binary_op(token_type: TokenType) -> BinaryOp {
-    match token_type {
+fn write_chunk_binary_ops(token: Token, chunk: &mut Chunk) {
+    let Token(ttype, pos) = token;
+    match ttype {
         TokenType::Symbol(sym) => match sym {
-            Symbol::Plus => BinaryOp::Add,
-            Symbol::Minus => BinaryOp::Subtract,
-            Symbol::Star => BinaryOp::Multiply,
-            Symbol::Slash => BinaryOp::Divide,
+            Symbol::Plus => chunk.emit_binary_op(BinaryOp::Add, pos.line),
+            Symbol::Minus => chunk.emit_binary_op(BinaryOp::Subtract, pos.line),
+            Symbol::Star => chunk.emit_binary_op(BinaryOp::Multiply, pos.line),
+            Symbol::Slash => chunk.emit_binary_op(BinaryOp::Divide, pos.line),
+            Symbol::EqualEqual => chunk.emit_binary_op(BinaryOp::Equal, pos.line),
+            Symbol::BangEqual => {
+                chunk.emit_binary_op(BinaryOp::Equal, pos.line);
+                chunk.emit_negate(pos.line);
+            }
+            Symbol::Greater => chunk.emit_binary_op(BinaryOp::Greater, pos.line),
+            Symbol::GreaterEqual => {
+                chunk.emit_binary_op(BinaryOp::Less, pos.line);
+                chunk.emit_not(pos.line);
+            }
+            Symbol::Less => chunk.emit_binary_op(BinaryOp::Less, pos.line),
+            Symbol::LessEqual => {
+                chunk.emit_binary_op(BinaryOp::Greater, pos.line);
+                chunk.emit_not(pos.line);
+            }
             s => panic!("not a binary op: {}", s),
         },
         TokenType::Keyword(key) => panic!("not a binary op: {}", key),

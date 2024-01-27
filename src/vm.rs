@@ -86,12 +86,15 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         ip: &mut usize,
         stack: &mut Stack<STACK>,
     ) -> Result<()> {
+        eprintln!("==== EXEC ====");
         loop {
             if TRACE_EXEC {
                 let mut result = String::new();
                 chunk.disassemble_inst(&mut result, *ip);
                 eprintln!("{} \t\tstack: {:?}", result, stack);
             }
+            // Store this since read_inst will mutate the ip and we don't want to backtrack
+            let last_ip = *ip;
             match self.read_inst(chunk, ip)? {
                 OpCode::Return => {
                     eprintln!("\treturn={:?}", stack.pop()?);
@@ -102,29 +105,102 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     stack.push(constant)?;
                 }
                 OpCode::Negate => {
-                    let v = stack.pop()?;
-                    stack.push(-v)?;
+                    if let Value::Number(n) = stack.pop()? {
+                        stack.push(Value::Number(-n))?;
+                    } else {
+                        return Err(raise_error(
+                            chunk,
+                            "type error: cannot negate operand",
+                            last_ip,
+                        ));
+                    }
                 }
                 OpCode::Add => {
-                    let (l, r) = self.pop_binary_operands(stack)?;
-                    stack.push(l + r)?;
+                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                        stack.push(Value::Number(l + r))?;
+                    } else {
+                        return Err(raise_error(
+                            chunk,
+                            "type error: cannot add operands",
+                            last_ip,
+                        ));
+                    }
                 }
                 OpCode::Subtract => {
-                    let (l, r) = self.pop_binary_operands(stack)?;
-                    stack.push(l - r)?;
+                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                        stack.push(Value::Number(l - r))?;
+                    } else {
+                        return Err(raise_error(
+                            chunk,
+                            "type error: cannot subtract operands",
+                            last_ip,
+                        ));
+                    }
                 }
                 OpCode::Multiply => {
-                    let (l, r) = self.pop_binary_operands(stack)?;
-                    stack.push(l * r)?;
+                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                        stack.push(Value::Number(l * r))?;
+                    } else {
+                        return Err(raise_error(
+                            chunk,
+                            "type error: cannot multiply operands",
+                            last_ip,
+                        ));
+                    }
                 }
                 OpCode::Divide => {
-                    let (l, r) = self.pop_binary_operands(stack)?;
-                    if r == 0f64 {
-                        bail!("divide by zero");
+                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                        if r == 0f64 {
+                            return Err(raise_error(chunk, "divide by zero", last_ip));
+                        }
+                        stack.push(Value::Number(l / r))?;
+                    } else {
+                        return Err(raise_error(
+                            chunk,
+                            "type error: cannot divide operands",
+                            last_ip,
+                        ));
                     }
-                    stack.push(l / r)?;
                 }
-                _ => unreachable!(),
+                OpCode::True => {
+                    stack.push(Value::Bool(true))?;
+                }
+                OpCode::False => {
+                    stack.push(Value::Bool(false))?;
+                }
+                OpCode::Nil => {
+                    stack.push(Value::Nil)?;
+                }
+                OpCode::Not => {
+                    let v = stack.pop()?.to_bool();
+                    stack.push(Value::Bool(!v))?;
+                }
+                OpCode::Equal => {
+                    let (l, r) = self.pop_binary_operands(stack)?;
+                    stack.push(Value::Bool(l == r))?;
+                }
+                OpCode::Greater => {
+                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                        stack.push(Value::Bool(l > r))?;
+                    } else {
+                        return Err(raise_error(
+                            chunk,
+                            "type error: > requires numeric operands",
+                            last_ip,
+                        ));
+                    }
+                }
+                OpCode::Less => {
+                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                        stack.push(Value::Bool(l > r))?;
+                    } else {
+                        return Err(raise_error(
+                            chunk,
+                            "type error: < requires numeric operands",
+                            last_ip,
+                        ));
+                    }
+                }
             }
         }
     }
@@ -137,6 +213,10 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         let l = stack.pop()?;
         Ok((l, r))
     }
+}
+
+fn raise_error(chunk: &Chunk, msg: &str, ip: usize) -> anyhow::Error {
+    anyhow!("error: {} at {}", msg, chunk.lines()[ip])
 }
 
 fn read_code_at_ip(chunk: &Chunk, ip: usize) -> Result<u8> {

@@ -4,38 +4,27 @@ mod reporter;
 mod scanner;
 mod vm;
 
-use std::env::args;
-use std::fs::File;
 use std::io::prelude::*;
 use std::io::stderr;
 use std::io::stdout;
 use std::io::BufReader;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use bytecode::Chunk;
 use compiler::compile;
 use reporter::WriteReporter;
-use scanner::Scanner;
 use vm::VM;
 
 fn main() -> Result<()> {
-    // let mut chunk = Chunk::new();
-    // chunk.emit_constant(1.2, 1);
-    // chunk.emit_negate(2);
-    // chunk.emit_constant(9.0, 3);
-    // chunk.emit_binary_op(bytecode::BinaryOp::Add, 3);
-    // chunk.emit_return(2);
-
-    // let mut vm: VM<true> = VM::new();
-    // vm.interpret(&chunk)?;
-    run_prompt()?;
-
+    run_prompt::<true>()?;
     Ok(())
 }
 
-fn run_prompt() -> Result<()> {
+fn run_prompt<const DEBUG: bool>() -> Result<()> {
     let stdin = std::io::stdin().lock();
+
+    let mut vm: VM<DEBUG> = VM::new();
 
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
@@ -51,10 +40,18 @@ fn run_prompt() -> Result<()> {
             break;
         }
 
-        let mut stderr = stderr().lock();
-        let mut reporter = WriteReporter::new(&mut stderr);
-        let chunk = compile(&line, &mut reporter)?;
-        chunk.disassemble("prompt");
+        let mut reporter = WriteReporter::new(stderr().lock());
+        match compile(&line, &mut reporter) {
+            Ok(chunk) => {
+                chunk.disassemble("prompt line");
+                if let Err(e) = vm.interpret(&chunk) {
+                    eprintln!("{}", e);
+                }
+            }
+            Err(err) => {
+                eprintln!("{}", err);
+            }
+        };
 
         line.clear();
         {
