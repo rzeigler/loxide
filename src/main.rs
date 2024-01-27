@@ -1,62 +1,70 @@
-mod ast;
 mod bytecode;
 mod compiler;
+mod reporter;
 mod scanner;
 mod vm;
 
 use std::env::args;
 use std::fs::File;
 use std::io::prelude::*;
+use std::io::stderr;
 use std::io::stdout;
 use std::io::BufReader;
 
 use anyhow::{Context, Result};
 
-use ast::BinaryOp;
 use bytecode::Chunk;
+use compiler::compile;
+use reporter::WriteReporter;
 use scanner::Scanner;
 use vm::VM;
 
 fn main() -> Result<()> {
-    let mut chunk = Chunk::new();
-    chunk.write_constant(1.2, 1);
-    chunk.write_negate(2);
-    chunk.write_constant(9.0, 3);
-    chunk.write_binary_op(bytecode::BinaryOp::Add, 3);
-    chunk.write_return(2);
+    // let mut chunk = Chunk::new();
+    // chunk.emit_constant(1.2, 1);
+    // chunk.emit_negate(2);
+    // chunk.emit_constant(9.0, 3);
+    // chunk.emit_binary_op(bytecode::BinaryOp::Add, 3);
+    // chunk.emit_return(2);
 
-    let mut vm: VM<true> = VM::new();
-    vm.interpret(&chunk)?;
+    // let mut vm: VM<true> = VM::new();
+    // vm.interpret(&chunk)?;
+    run_prompt()?;
 
     Ok(())
 }
 
-// fn run_prompt() -> Result<()> {
-//     let stdin = std::io::stdin().lock();
-//     let mut reader = BufReader::new(stdin);
-//     let mut line = String::new();
-//     let mut interpreter = stock_interpreter()?;
-//     loop {
-//         {
-//             let mut stdout = stdout().lock();
-//             stdout.write_all("> ".as_bytes()).unwrap();
-//             stdout.flush()?;
-//         }
-//         let n = reader.read_line(&mut line)?;
-//         if n == 0 {
-//             break;
-//         }
-//         run(&mut interpreter, &line, true);
-//         // Don't keep appending code until the next time
-//         line.clear();
-//         {
-//             let mut stdout = stdout().lock();
-//             stdout.write_all("<\n".as_bytes()).unwrap();
-//             stdout.flush().unwrap();
-//         }
-//     }
-//     Ok(())
-// }
+fn run_prompt() -> Result<()> {
+    let stdin = std::io::stdin().lock();
+
+    let mut reader = BufReader::new(stdin);
+    let mut line = String::new();
+    loop {
+        {
+            let mut stdout = stdout().lock();
+            stdout.write_all("> ".as_bytes()).unwrap();
+            stdout.flush()?;
+        }
+
+        let n = reader.read_line(&mut line)?;
+        if n == 0 {
+            break;
+        }
+
+        let mut stderr = stderr().lock();
+        let mut reporter = WriteReporter::new(&mut stderr);
+        let chunk = compile(&line, &mut reporter)?;
+        chunk.disassemble("prompt");
+
+        line.clear();
+        {
+            let mut stdout = stdout().lock();
+            stdout.write_all("<\n".as_bytes()).unwrap();
+            stdout.flush().unwrap();
+        }
+    }
+    Ok(())
+}
 
 // fn run(interpreter: &mut Interpreter, code: &str, in_repl: bool) {
 //     let mut stderr = std::io::stderr().lock();

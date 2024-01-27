@@ -41,10 +41,7 @@ impl ErrorType {
 /// Note that pos is always defined, but in the case of EOF will describe a location
 /// Potentially off the end of the input stream
 #[derive(Debug, PartialEq, Clone)]
-pub struct Token<'code> {
-    pub data: TokenType<'code>,
-    pub pos: Pos,
-}
+pub struct Token<'code>(pub TokenType<'code>, pub Pos);
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum TokenType<'code> {
@@ -190,66 +187,18 @@ impl<'lex> Scanner<'lex> {
     }
 
     /// Determine if the next token returned would be EOF
-    pub fn is_at_eof(&self) -> bool {
+    pub fn at_eof(&self) -> bool {
         // This can't be just self.offset == self.code.len() because its possible there is trailing whitespace
         // So, instead, peek the next token and check what it is
-        if let Ok(Token {
-            data: TokenType::Eof,
-            pos: _,
-        }) = self.clone().next()
-        {
+        if let Ok(Token(TokenType::Eof, _)) = self.peek() {
             true
         } else {
             false
         }
     }
 
-    /// Consume the next token iff. it matches the given predicate.
-    /// If it does not, the next call to next will return it
-    /// This function cannot error, it is assumed that a consumer is uninterested in consuming error state
-    pub fn next_if<P>(&mut self, predicate: P) -> Option<Token<'lex>>
-    where
-        P: FnOnce(&TokenType<'lex>) -> bool,
-    {
-        let before = self.clone();
-        let next = self.next();
-        if let Ok(token) = next {
-            if predicate(&token.data) {
-                return Some(token);
-            }
-        }
-        *self = before;
-        None
-    }
-
-    /// Consume and return the next token if filter_map returns a Some
-    /// This is useful to perform conditional peeks where we may want a limited bit of data, etc.
-    /// This function cannot error, it is assumed that consumers are unintereste din errors
-    ///
-    pub fn next_if_some<F, A>(&mut self, filter_map: F) -> Option<(Pos, A)>
-    where
-        F: FnOnce(TokenType<'lex>) -> Option<A>,
-    {
-        let before = self.clone();
-        if let Ok(token) = self.next() {
-            if let Some(result) = filter_map(token.data) {
-                return Some((token.pos, result));
-            }
-        }
-        *self = before;
-        None
-    }
-
     pub fn peek(&self) -> Result<Token<'lex>, Error> {
-        let mut clone = self.clone();
-        clone.next()
-    }
-
-    pub fn peek_pos(&self) -> Pos {
-        match self.peek() {
-            Ok(token) => token.pos,
-            Err(error) => error.pos,
-        }
+        self.clone().next()
     }
 
     pub fn next(&mut self) -> Result<Token<'lex>, Error> {
@@ -259,10 +208,7 @@ impl<'lex> Scanner<'lex> {
         if self.offset > self.code.len() {
             panic!("scanned past EOF");
         } else if self.offset == self.code.len() {
-            Ok(Token {
-                data: TokenType::Eof,
-                pos,
-            })
+            Ok(Token(TokenType::Eof, pos))
         } else {
             let ch = self.code[self.offset];
             // Track the previous offset, some tokens like to have it
@@ -271,87 +217,51 @@ impl<'lex> Scanner<'lex> {
             match ch {
                 b'(' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::LeftParen),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::LeftParen), pos))
                 }
                 b')' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::RightParen),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::RightParen), pos))
                 }
                 b'{' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::LeftBrace),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::LeftBrace), pos))
                 }
                 b'}' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::RightBrace),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::RightBrace), pos))
                 }
                 b',' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Comma),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Comma), pos))
                 }
                 b'.' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Dot),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Dot), pos))
                 }
                 b'-' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Minus),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Minus), pos))
                 }
                 b'+' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Plus),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Plus), pos))
                 }
                 b';' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Semicolon),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Semicolon), pos))
                 }
                 b'?' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Question),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Question), pos))
                 }
                 b':' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Colon),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Colon), pos))
                 }
                 b'*' => {
                     self.offset_in_line += 1;
-                    Ok(Token {
-                        data: TokenType::Symbol(Symbol::Star),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(Symbol::Star), pos))
                 }
                 b'!' => {
                     let symbol = if self.consume_next_char_if_eq(b'=') {
@@ -361,10 +271,7 @@ impl<'lex> Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Bang
                     };
-                    Ok(Token {
-                        data: TokenType::Symbol(symbol),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(symbol), pos))
                 }
                 b'=' => {
                     let symbol = if self.consume_next_char_if_eq(b'=') {
@@ -374,10 +281,7 @@ impl<'lex> Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Equal
                     };
-                    Ok(Token {
-                        data: TokenType::Symbol(symbol),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(symbol), pos))
                 }
                 b'<' => {
                     let symbol = if self.consume_next_char_if_eq(b'=') {
@@ -387,10 +291,7 @@ impl<'lex> Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Less
                     };
-                    Ok(Token {
-                        data: TokenType::Symbol(symbol),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(symbol), pos))
                 }
                 b'>' => {
                     let symbol = if self.consume_next_char_if_eq(b'=') {
@@ -400,10 +301,7 @@ impl<'lex> Scanner<'lex> {
                         self.offset_in_line += 1;
                         Symbol::Greater
                     };
-                    Ok(Token {
-                        data: TokenType::Symbol(symbol),
-                        pos,
-                    })
+                    Ok(Token(TokenType::Symbol(symbol), pos))
                 }
                 b'/' => {
                     if self.consume_next_char_if_eq(b'/') {
@@ -418,10 +316,7 @@ impl<'lex> Scanner<'lex> {
                         self.next()
                     } else {
                         self.offset_in_line += 1;
-                        Ok(Token {
-                            data: TokenType::Symbol(Symbol::Slash),
-                            pos,
-                        })
+                        Ok(Token(TokenType::Symbol(Symbol::Slash), pos))
                     }
                 }
                 // Both of these have almost the same behavior. We gobble all the whitespace we can to avoid increasing
@@ -454,10 +349,7 @@ impl<'lex> Scanner<'lex> {
                     // SAFETY: offset is generated as a valid utf-8 offset per CharIndices
                     let num_slice = unsafe { self.code_subslice(offset, num_len) };
                     let number = num_slice.parse::<f64>().unwrap();
-                    let token = Token {
-                        data: TokenType::Number(number),
-                        pos,
-                    };
+                    let token = Token(TokenType::Number(number), pos);
                     Ok(token)
                 }
                 b'"' => {
@@ -490,10 +382,7 @@ impl<'lex> Scanner<'lex> {
                             // SAFETY: The only way to terminate the string validly is between valid single byte characters of "
                             self.code_subslice(offset + 1, str_len)
                         };
-                        Ok(Token {
-                            data: TokenType::String(string),
-                            pos,
-                        })
+                        Ok(Token(TokenType::String(string), pos))
                     }
                 }
                 c if c.is_ascii_alphabetic() => {
@@ -510,15 +399,9 @@ impl<'lex> Scanner<'lex> {
                         .iter()
                         .find(|(lit, _)| *lit == identifier)
                     {
-                        Token {
-                            data: TokenType::Keyword(*kw),
-                            pos,
-                        }
+                        Token(TokenType::Keyword(*kw), pos)
                     } else {
-                        Token {
-                            data: TokenType::Identifier(identifier),
-                            pos,
-                        }
+                        Token(TokenType::Identifier(identifier), pos)
                     };
                     Ok(token)
                 }
@@ -615,7 +498,7 @@ mod test {
         let code = "var";
         let mut scanner = Scanner::new(&code);
         let first_token = scanner.next().unwrap();
-        match first_token.data {
+        match first_token.0 {
             TokenType::Keyword(keyword) => {
                 assert_eq!(Keyword::Var, keyword);
                 assert_eq!(
@@ -623,7 +506,7 @@ mod test {
                         offset_in_line: 0,
                         line: 0
                     },
-                    first_token.pos
+                    first_token.1
                 );
             }
             _ => unreachable!(),
@@ -635,7 +518,7 @@ mod test {
         let code = "var marco = \"9001\"";
         let mut scanner = Scanner::new(&code);
         let token = scanner.next().unwrap();
-        match token.data {
+        match token.0 {
             TokenType::Keyword(keyword) => {
                 assert_eq!(Keyword::Var, keyword);
                 assert_eq!(
@@ -643,14 +526,14 @@ mod test {
                         offset_in_line: 0,
                         line: 0
                     },
-                    token.pos
+                    token.1
                 );
             }
             _ => unreachable!(),
         }
 
         let token = scanner.next().unwrap();
-        match token.data {
+        match token.0 {
             TokenType::Identifier(identifier) => {
                 assert_eq!("marco", identifier);
                 assert_eq!(
@@ -658,14 +541,14 @@ mod test {
                         offset_in_line: 4,
                         line: 0
                     },
-                    token.pos
+                    token.1
                 );
             }
             _ => unreachable!(),
         }
 
         let token = scanner.next().unwrap();
-        match token.data {
+        match token.0 {
             TokenType::Symbol(symbol) => {
                 assert_eq!(Symbol::Equal, symbol);
                 assert_eq!(
@@ -673,14 +556,14 @@ mod test {
                         offset_in_line: 10,
                         line: 0
                     },
-                    token.pos
+                    token.1
                 );
             }
             _ => unreachable!(),
         }
 
         let token = scanner.next().unwrap();
-        match token.data {
+        match token.0 {
             TokenType::String(string) => {
                 assert_eq!("9001", string);
                 assert_eq!(
@@ -688,14 +571,14 @@ mod test {
                         offset_in_line: 12,
                         line: 0
                     },
-                    token.pos
+                    token.1
                 );
             }
             _ => unreachable!(),
         }
 
         let token = scanner.next().unwrap();
-        match token.data {
+        match token.0 {
             TokenType::Eof => {}
             _ => unreachable!(),
         }
@@ -710,17 +593,17 @@ bomp";
         let mut scanner = Scanner::new(&code);
         // Did we get a string?
         let token = scanner.next().unwrap();
-        match token.data {
+        match token.0 {
             TokenType::String(string) => {
                 assert_eq!("marco\nbomp", string);
-                assert_eq!(0, token.pos.offset_in_line);
-                assert_eq!(1, token.pos.line);
+                assert_eq!(0, token.1.offset_in_line);
+                assert_eq!(1, token.1.line);
             }
             _ => unreachable!(),
         }
         // Did we correctly update the lines etc
         let token = scanner.next().unwrap();
-        match token.data {
+        match token.0 {
             TokenType::Symbol(symbol) => {
                 assert_eq!(Symbol::Semicolon, symbol);
                 assert_eq!(
@@ -728,7 +611,7 @@ bomp";
                         line: 2,
                         offset_in_line: 5
                     },
-                    token.pos
+                    token.1
                 );
             }
             _ => unreachable!(),
@@ -743,7 +626,7 @@ bomp";
         let token = scanner.next();
         assert_eq!(ErrorType::UnterminatedString, token.unwrap_err().error);
         let token = scanner.next();
-        assert_eq!(TokenType::Eof, token.unwrap().data);
+        assert_eq!(TokenType::Eof, token.unwrap().0);
     }
 
     #[test]

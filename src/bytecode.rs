@@ -66,17 +66,17 @@ impl Chunk {
         &self.constants
     }
 
-    pub fn write_return(&mut self, line: usize) {
+    pub fn emit_return(&mut self, line: usize) {
         self.code.push(OpCode::Return as u8);
         self.lines.push(line);
     }
 
-    pub fn write_binary_op(&mut self, op: BinaryOp, line: usize) {
+    pub fn emit_binary_op(&mut self, op: BinaryOp, line: usize) {
         self.code.push(OpCode::from(op) as u8);
         self.lines.push(line);
     }
 
-    pub fn write_constant(&mut self, constant: Value, line: usize) {
+    pub fn emit_constant(&mut self, constant: Value, line: usize) {
         let cindex = self.add_constant(constant);
 
         self.code.push(OpCode::Constant as u8);
@@ -86,7 +86,7 @@ impl Chunk {
         self.lines.push(line);
     }
 
-    pub fn write_negate(&mut self, line: usize) {
+    pub fn emit_negate(&mut self, line: usize) {
         self.code.push(OpCode::Negate as u8);
         self.lines.push(line);
     }
