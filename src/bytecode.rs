@@ -1,4 +1,4 @@
-use std::fmt::Display;
+use crate::heap::Value;
 
 #[derive(Debug)]
 #[repr(u8)]
@@ -52,57 +52,6 @@ pub enum BinaryOp {
     Equal,
     Greater,
     Less,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum Value {
-    Bool(bool),
-    Nil,
-    Number(f64),
-}
-
-impl Value {
-    pub fn to_bool(&self) -> bool {
-        match self {
-            Value::Bool(b) => *b,
-            Value::Nil => false,
-            _ => true,
-        }
-    }
-}
-
-impl PartialEq for Value {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Self::Bool(l), Self::Bool(r)) => l == r,
-            (Self::Number(l), Self::Number(r)) => l == r,
-            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
-        }
-    }
-}
-
-impl Eq for Value {}
-
-impl From<bool> for Value {
-    fn from(value: bool) -> Self {
-        Value::Bool(value)
-    }
-}
-
-impl From<f64> for Value {
-    fn from(value: f64) -> Self {
-        Value::Number(value)
-    }
-}
-
-impl Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Nil => f.write_str("nil"),
-            Value::Number(n) => write!(f, "{}", n),
-        }
-    }
 }
 
 pub struct Chunk {

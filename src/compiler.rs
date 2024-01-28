@@ -1,7 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 
 use crate::{
-    bytecode::{BinaryOp, Value},
+    bytecode::BinaryOp,
+    heap::{Heap, Value},
     reporter::Reporter,
     scanner::{Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
@@ -38,7 +39,7 @@ where
     }
 }
 
-pub fn compile<R>(source: &str, reporter: &mut R) -> Result<Chunk>
+pub fn compile<'heap, R>(source: &str, reporter: &mut R, heap: &'heap mut Heap) -> Result<Chunk>
 where
     R: Reporter,
 {
@@ -46,7 +47,7 @@ where
     let mut error = ErrorHandler::new(reporter);
     let mut chunk = Chunk::new();
 
-    if let Err(_) = compile_stream(&mut error, &mut chunk, &mut scanner) {
+    if let Err(_) = compile_stream(&mut error, &mut chunk, &mut scanner, heap) {
         bail!("compiler error");
     }
 
@@ -63,33 +64,36 @@ pub(crate) struct CompilePanic {}
 
 const COMPILE_PANIC: CompilePanic = CompilePanic {};
 
-fn compile_stream<R>(
+fn compile_stream<'heap, R>(
     error: &mut ErrorHandler<R>,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
+    heap: &'heap mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
 {
-    expr(error, chunk, scanner)
+    expr(error, chunk, scanner, heap)
 }
 
 // I have diverged from lox's implementation slightly something similar https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
-fn expr<R>(
+fn expr<'heap, R>(
     error: &mut ErrorHandler<R>,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
+    heap: &'heap mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
 {
-    compile_precedence(error, chunk, scanner, 1)
+    compile_precedence(error, chunk, scanner, heap, 1)
 }
 
-fn compile_precedence<R>(
+fn compile_precedence<'heap, R>(
     error: &mut ErrorHandler<R>,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
+    heap: &'heap mut Heap,
     min_precedence: u8,
 ) -> Result<(), CompilePanic>
 where
@@ -98,10 +102,10 @@ where
     match scanner.next() {
         Ok(Token(TokenType::Symbol(sym), pos)) => {
             if sym == Symbol::LeftParen {
-                compile_precedence(error, chunk, scanner, 0)?;
+                compile_precedence(error, chunk, scanner, heap, 0)?;
                 expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
             } else {
-                compile_precedence(error, chunk, scanner, unary_prec(sym))?;
+                compile_precedence(error, chunk, scanner, heap, unary_prec(sym))?;
                 match sym {
                     Symbol::Minus => chunk.emit_negate(pos.line),
                     Symbol::Bang => chunk.emit_not(pos.line),
@@ -113,6 +117,10 @@ where
         Ok(Token(TokenType::Keyword(Keyword::True), pos)) => chunk.emit_bool(true, pos.line),
         Ok(Token(TokenType::Keyword(Keyword::False), pos)) => chunk.emit_bool(false, pos.line),
         Ok(Token(TokenType::Keyword(Keyword::Nil), pos)) => chunk.emit_nil(pos.line),
+        Ok(Token(TokenType::String(string), pos)) => {
+            let constant = heap.alloc_str_copy(string);
+            chunk.emit_constant(constant, pos.line);
+        }
         Err(e) => {
             return error.report(e.pos, "unrecognized token");
         }
@@ -131,7 +139,7 @@ where
                 Some(prec) if min_precedence > prec => break,
                 Some(prec) => {
                     _ = scanner.next();
-                    compile_precedence(error, chunk, scanner, prec + 1)?;
+                    compile_precedence(error, chunk, scanner, heap, prec + 1)?;
                     write_chunk_binary_ops(token, chunk);
                 }
             },

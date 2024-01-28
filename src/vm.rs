@@ -2,14 +2,17 @@ use std::{fmt::Debug, mem::MaybeUninit};
 
 use anyhow::{anyhow, bail, Context, Result};
 
-use crate::bytecode::{Chunk, OpCode, Value};
+use crate::{
+    bytecode::{Chunk, OpCode},
+    heap::{Heap, Object, Value},
+};
 
 pub struct Stack<const LIMIT: usize = 256> {
     stack: [MaybeUninit<Value>; LIMIT],
     top: usize,
 }
 
-impl<const LIMIT: usize> Stack<LIMIT> {
+impl<'heap, const LIMIT: usize> Stack<LIMIT> {
     pub fn new() -> Stack<LIMIT> {
         Stack {
             stack: [MaybeUninit::uninit(); LIMIT],
@@ -38,7 +41,7 @@ impl<const LIMIT: usize> Stack<LIMIT> {
     }
 }
 
-impl<const LIMIT: usize> Debug for Stack<LIMIT> {
+impl<'heap, const LIMIT: usize> Debug for Stack<LIMIT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut list = f.debug_list();
 
@@ -50,11 +53,13 @@ impl<const LIMIT: usize> Debug for Stack<LIMIT> {
     }
 }
 
-pub struct VM<const TRACE_EXEC: bool = false> {}
+pub struct VM<const TRACE_EXEC: bool = false> {
+    heap: Heap,
+}
 
 impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
-    pub fn new() -> VM<TRACE_EXEC> {
-        VM {}
+    pub fn new(heap: Heap) -> VM<TRACE_EXEC> {
+        VM { heap }
     }
 
     pub fn interpret(&mut self, chunk: &Chunk) -> Result<()> {
@@ -115,17 +120,19 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         ));
                     }
                 }
-                OpCode::Add => {
-                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                OpCode::Add => match self.pop_binary_operands(stack)? {
+                    (Value::Number(l), Value::Number(r)) => {
                         stack.push(Value::Number(l + r))?;
-                    } else {
+                    }
+                    (Value::Object(l), Value::Object(r)) => unsafe { todo!() },
+                    _ => {
                         return Err(raise_error(
                             chunk,
                             "type error: cannot add operands",
                             last_ip,
-                        ));
+                        ))
                     }
-                }
+                },
                 OpCode::Subtract => {
                     if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
                         stack.push(Value::Number(l - r))?;

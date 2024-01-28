@@ -1,5 +1,8 @@
+#![feature(alloc_layout_extra)]
+
 mod bytecode;
 mod compiler;
+mod heap;
 mod reporter;
 mod scanner;
 mod vm;
@@ -13,6 +16,7 @@ use anyhow::Result;
 
 use bytecode::Chunk;
 use compiler::compile;
+use heap::Heap;
 use reporter::WriteReporter;
 use vm::VM;
 
@@ -23,8 +27,8 @@ fn main() -> Result<()> {
 
 fn run_prompt<const DEBUG: bool>() -> Result<()> {
     let stdin = std::io::stdin().lock();
-
-    let mut vm: VM<DEBUG> = VM::new();
+    let mut heap = Heap::new();
+    let mut vm: VM<DEBUG> = VM::new(heap.clone());
 
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();
@@ -41,7 +45,7 @@ fn run_prompt<const DEBUG: bool>() -> Result<()> {
         }
 
         let mut reporter = WriteReporter::new(stderr().lock());
-        match compile(&line, &mut reporter) {
+        match compile(&line, &mut reporter, &mut heap) {
             Ok(chunk) => {
                 chunk.disassemble("prompt line");
                 if let Err(e) = vm.interpret(&chunk) {
