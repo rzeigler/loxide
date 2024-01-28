@@ -64,7 +64,7 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Nil => f.write_str("nil"),
             Value::Number(n) => write!(f, "{}", n),
-            Value::Object(_) => f.write_str("object"),
+            Value::Object(o) => write!(f, "{:?}", o),
         }
     }
 }
