@@ -118,8 +118,8 @@ where
         Ok(Token(TokenType::Keyword(Keyword::False), pos)) => chunk.emit_bool(false, pos.line),
         Ok(Token(TokenType::Keyword(Keyword::Nil), pos)) => chunk.emit_nil(pos.line),
         Ok(Token(TokenType::String(string), pos)) => {
-            let constant = heap.alloc_str_copy(string);
-            chunk.emit_constant(constant, pos.line);
+            let str_obj = heap.alloc_string_in_heap(string);
+            chunk.emit_constant(Value::Object(str_obj), pos.line);
         }
         Err(e) => {
             return error.report(e.pos, "unrecognized token");

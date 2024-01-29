@@ -1,14 +1,9 @@
 use std::{
-    alloc::{alloc, Layout},
+    alloc::Layout,
     cell::RefCell,
-    fmt::Display,
+    fmt::{Debug, Display},
     rc::Rc,
 };
-
-#[derive(Debug, Clone, Copy)]
-pub enum ObjectType {
-    String,
-}
 
 #[derive(Debug, Clone, Copy)]
 #[repr(C, u8)]
@@ -16,7 +11,22 @@ pub enum Object {
     String(&'static [u8]), // Pretend static
 }
 
-#[derive(Debug, Clone, Copy)]
+impl Object {
+    pub fn is_string(&self) -> bool {
+        match self {
+            Object::String(_) => true,
+        }
+    }
+
+    pub fn string_slice(&self) -> &'static [u8] {
+        match self {
+            Object::String(s) => s,
+            _ => panic!("not a string"),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub enum Value {
     Bool(bool),
     Nil,
@@ -30,6 +40,23 @@ impl Value {
             Value::Bool(b) => *b,
             Value::Nil => false,
             _ => true,
+        }
+    }
+
+    // Create the string representation
+    // This will return a Value::Object(Object::String(..))
+    // If self is already one, it will return a cloned reference
+    pub fn create_string(&self, heap: &Heap) -> *mut Object {
+        match self {
+            Value::Object(obj_ptr) => unsafe {
+                match std::ptr::read(*obj_ptr) {
+                    // Already a string
+                    Object::String(_) => *obj_ptr,
+                }
+            },
+            Value::Nil => heap.alloc_string_in_heap("nil"),
+            Value::Number(n) => heap.alloc_string_in_heap(&format!("{}", n)),
+            Value::Bool(b) => heap.alloc_string_in_heap(&format!("{}", b)),
         }
     }
 }
@@ -64,8 +91,21 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Nil => f.write_str("nil"),
             Value::Number(n) => write!(f, "{}", n),
-            Value::Object(o) => write!(f, "{:?}", o),
+            Value::Object(obj_ptr) => unsafe {
+                match &**obj_ptr {
+                    Object::String(slice) => {
+                        // We don't allow construct non-utf8 string representations
+                        write!(f, "\"{}\"", std::str::from_utf8_unchecked(slice))
+                    }
+                }
+            },
         }
+    }
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Display::fmt(self, f)
     }
 }
 
@@ -84,7 +124,7 @@ impl Heap {
     }
 
     // TODO: Something, something, allocation
-    pub fn alloc_str_copy(&mut self, str: &str) -> Value {
+    pub fn alloc_string_in_heap(&self, str: &str) -> *mut Object {
         // self.inner.as_ref().borrow_mut().objects.push(obj_ptr);
         let bytes = str.as_bytes();
         let (layout, _) = Layout::new::<u8>().repeat(bytes.len()).unwrap();
@@ -94,9 +134,7 @@ impl Heap {
 
         let slice = unsafe { std::slice::from_raw_parts_mut(ptr, bytes.len()) };
 
-        for (from, to) in bytes.iter().zip(slice.iter_mut()) {
-            *to = *from
-        }
+        slice.copy_from_slice(bytes);
 
         // Now let us allocate an object
         unsafe {
@@ -106,8 +144,22 @@ impl Heap {
 
             let obj = obj as *mut Object;
             obj.write(Object::String(slice));
-            Value::Object(obj)
+            obj
         }
+    }
+
+    pub fn alloc_string_buf(&self, len: usize) -> *mut u8 {
+        let (layout, _) = Layout::new::<u8>().repeat(len).unwrap();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        self.inner.as_ref().borrow_mut().0.push((ptr, layout));
+        ptr
+    }
+
+    pub fn alloc_object(&self) -> *mut Object {
+        let layout = Layout::new::<Object>();
+        let ptr = unsafe { std::alloc::alloc_zeroed(layout) };
+        self.inner.as_ref().borrow_mut().0.push((ptr, layout));
+        ptr as *mut Object
     }
 }
 

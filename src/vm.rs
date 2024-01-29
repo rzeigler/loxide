@@ -1,4 +1,5 @@
-use std::{fmt::Debug, mem::MaybeUninit};
+use core::slice;
+use std::{fmt::Debug, mem::MaybeUninit, path::Display};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -12,7 +13,7 @@ pub struct Stack<const LIMIT: usize = 256> {
     top: usize,
 }
 
-impl<'heap, const LIMIT: usize> Stack<LIMIT> {
+impl<const LIMIT: usize> Stack<LIMIT> {
     pub fn new() -> Stack<LIMIT> {
         Stack {
             stack: [MaybeUninit::uninit(); LIMIT],
@@ -41,7 +42,7 @@ impl<'heap, const LIMIT: usize> Stack<LIMIT> {
     }
 }
 
-impl<'heap, const LIMIT: usize> Debug for Stack<LIMIT> {
+impl<const LIMIT: usize> Debug for Stack<LIMIT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut list = f.debug_list();
 
@@ -124,7 +125,17 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     (Value::Number(l), Value::Number(r)) => {
                         stack.push(Value::Number(l + r))?;
                     }
-                    (Value::Object(l), Value::Object(r)) => unsafe { todo!() },
+                    (Value::Object(l), Value::Object(r)) => unsafe {
+                        if (&*l).is_string() || (&*r).is_string() {
+                            stack.push(self.concat_strings(Value::Object(l), Value::Object(r)))?;
+                        } else {
+                            return Err(raise_error(
+                                chunk,
+                                "type error: cannot add operands",
+                                last_ip,
+                            ));
+                        }
+                    },
                     _ => {
                         return Err(raise_error(
                             chunk,
@@ -219,6 +230,33 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         let r = stack.pop()?;
         let l = stack.pop()?;
         Ok((l, r))
+    }
+
+    // String concatenation
+    // Assumes that at least 1 of the Values is a string
+    fn concat_strings(&self, left: Value, right: Value) -> Value {
+        // One of them should be a string but allocate a string out of the other
+        let left_str = left.create_string(&self.heap);
+        let right_str = right.create_string(&self.heap);
+        unsafe {
+            let left_slice = (&*left_str).string_slice();
+            let right_slice = (&*right_str).string_slice();
+
+            let len = left_slice.len() + right_slice.len();
+            let buf_ptr = self.heap.alloc_string_buf(len);
+
+            let slice = slice::from_raw_parts_mut(buf_ptr, len);
+
+            slice[..left_slice.len()].copy_from_slice(left_slice);
+            slice[left_slice.len()..].copy_from_slice(right_slice);
+
+            // Recreate an immutable slice
+            let slice: &'static [u8] = std::mem::transmute(slice);
+
+            let obj_ptr = self.heap.alloc_object();
+            obj_ptr.write(Object::String(slice));
+            Value::Object(obj_ptr)
+        }
     }
 }
 
