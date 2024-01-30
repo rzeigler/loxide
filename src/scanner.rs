@@ -201,6 +201,12 @@ impl<'lex> Scanner<'lex> {
         self.clone().next()
     }
 
+    // Consume the next token, regardless
+    // This is most useful when peeking
+    pub fn eat(&mut self) {
+        _ = self.next();
+    }
+
     pub fn next(&mut self) -> Result<Token<'lex>, Error> {
         // First things first, consume any leading whitespace
         self.gobble_whitespace();

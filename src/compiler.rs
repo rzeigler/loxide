@@ -3,15 +3,14 @@ use anyhow::{anyhow, bail, Context, Result};
 use crate::{
     bytecode::BinaryOp,
     heap::{Heap, Value},
-    reporter::Reporter,
-    scanner::{Keyword, Pos, Scanner, Symbol, Token, TokenType},
+    reporter::{self, Reporter},
+    scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
 
 use super::Chunk;
 
 pub struct ErrorHandler<'r, R> {
     reporter: &'r mut R,
-    in_panic: bool,
     has_errored: bool,
 }
 
@@ -19,7 +18,6 @@ impl<'r, R> ErrorHandler<'r, R> {
     pub fn new(reporter: &'r mut R) -> ErrorHandler<'r, R> {
         ErrorHandler {
             reporter,
-            in_panic: false,
             has_errored: false,
         }
     }
@@ -33,7 +31,6 @@ where
         // Only report the error when
         self.reporter.report(pos, msg);
         self.has_errored = true;
-        self.in_panic = true;
         // Returns for convenience to minimize the clutter of panic
         Err(COMPILE_PANIC)
     }
@@ -69,7 +66,7 @@ fn compile_stream<'heap, R>(
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &'heap mut Heap,
-) -> Result<(), CompilePanic>
+) -> Result<()>
 where
     R: Reporter,
 {
@@ -77,10 +74,73 @@ where
         declaration(error, chunk, scanner, heap);
     }
 
-    Ok(())
+    if error.has_errored {
+        Err(anyhow!("compilation failed"))
+    } else {
+        Ok(())
+    }
 }
 
+// Switch from unwind by CompileError to synchronization here
+// Higher levels should inspect the ErrorHandler state to determine if an error happened
 fn declaration<R>(
+    error: &mut ErrorHandler<R>,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) where
+    R: Reporter,
+{
+    let result = if scanner
+        .peek()
+        .map(|token| token.0 == Keyword::Var)
+        .unwrap_or(false)
+    {
+        scanner.eat();
+        var_declaration(error, chunk, scanner, heap)
+    } else {
+        statement(error, chunk, scanner, heap)
+    };
+
+    match result {
+        Ok(_) => {}
+        Err(_) => synchronize(scanner),
+    }
+}
+
+fn synchronize(scanner: &mut Scanner) {
+    while !scanner.at_eof() {
+        // Check if we think we have found a statement boundary
+        // If the next token is a semi-colon we should consume it and return
+        // If the next token starts a larget construct like a class, var, etc, then we should _not_ consume it and return
+        if let Ok(Token(ttype, _)) = scanner.peek() {
+            match ttype {
+                TokenType::Symbol(Symbol::Semicolon) => {
+                    // consume and break;
+                    scanner.eat();
+                    return;
+                }
+                TokenType::Keyword(Keyword::Class)
+                | TokenType::Keyword(Keyword::Fun)
+                | TokenType::Keyword(Keyword::Var)
+                | TokenType::Keyword(Keyword::For)
+                | TokenType::Keyword(Keyword::If)
+                | TokenType::Keyword(Keyword::While)
+                | TokenType::Keyword(Keyword::Print)
+                | TokenType::Keyword(Keyword::Return) => {
+                    // don't consume and break
+                    return;
+                }
+                _ => {} // Keep consuming
+            }
+        } else {
+            // Token was an error, so we should consume it
+            _ = scanner.next();
+        }
+    }
+}
+
+fn var_declaration<R>(
     error: &mut ErrorHandler<R>,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
@@ -89,7 +149,27 @@ fn declaration<R>(
 where
     R: Reporter,
 {
-    statement(error, chunk, scanner, heap)
+    let (identifier, pos) = match scanner.next() {
+        Ok(Token(TokenType::Identifier(ident), pos)) => (ident, pos),
+        Ok(Token(_, pos)) => return error.report(pos, "expected identifier"),
+        Err(err) => return error.report(err.pos, "unrecognized token"),
+    };
+
+    let ident_str = Value::Object(heap.alloc_string_in_heap(identifier));
+    let ident_constant = chunk.add_constant(ident_str);
+
+    if let Token(TokenType::Symbol(Symbol::Equal), _) = adapt_scanner_error(scanner.peek(), error)?
+    {
+        scanner.eat();
+        expr(error, chunk, scanner, heap)?;
+    } else {
+        chunk.emit_nil(pos.line);
+    }
+
+    expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
+
+    chunk.emit_define_global(ident_constant, pos.line);
+    Ok(())
 }
 
 fn statement<R>(
@@ -157,10 +237,10 @@ fn expr<'heap, R>(
 where
     R: Reporter,
 {
-    compile_precedence(error, chunk, scanner, heap, 1)
+    expr_precedence(error, chunk, scanner, heap, 1)
 }
 
-fn compile_precedence<'heap, R>(
+fn expr_precedence<'heap, R>(
     error: &mut ErrorHandler<R>,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
@@ -170,13 +250,13 @@ fn compile_precedence<'heap, R>(
 where
     R: Reporter,
 {
-    match scanner.next() {
-        Ok(Token(TokenType::Symbol(sym), pos)) => {
+    match adapt_scanner_error(scanner.next(), error)? {
+        Token(TokenType::Symbol(sym), pos) => {
             if sym == Symbol::LeftParen {
-                compile_precedence(error, chunk, scanner, heap, 0)?;
+                expr_precedence(error, chunk, scanner, heap, 0)?;
                 expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
             } else {
-                compile_precedence(error, chunk, scanner, heap, unary_prec(sym))?;
+                expr_precedence(error, chunk, scanner, heap, unary_prec(sym))?;
                 match sym {
                     Symbol::Minus => chunk.emit_negate(pos.line),
                     Symbol::Bang => chunk.emit_not(pos.line),
@@ -184,16 +264,13 @@ where
                 }
             }
         }
-        Ok(Token(TokenType::Number(num), pos)) => chunk.emit_constant(num.into(), pos.line),
-        Ok(Token(TokenType::Keyword(Keyword::True), pos)) => chunk.emit_bool(true, pos.line),
-        Ok(Token(TokenType::Keyword(Keyword::False), pos)) => chunk.emit_bool(false, pos.line),
-        Ok(Token(TokenType::Keyword(Keyword::Nil), pos)) => chunk.emit_nil(pos.line),
-        Ok(Token(TokenType::String(string), pos)) => {
+        Token(TokenType::Number(num), pos) => chunk.emit_constant(num.into(), pos.line),
+        Token(TokenType::Keyword(Keyword::True), pos) => chunk.emit_bool(true, pos.line),
+        Token(TokenType::Keyword(Keyword::False), pos) => chunk.emit_bool(false, pos.line),
+        Token(TokenType::Keyword(Keyword::Nil), pos) => chunk.emit_nil(pos.line),
+        Token(TokenType::String(string), pos) => {
             let str_obj = heap.alloc_string_in_heap(string);
             chunk.emit_constant(Value::Object(str_obj), pos.line);
-        }
-        Err(e) => {
-            return error.report(e.pos, "unrecognized token");
         }
         _ => todo!(),
     };
@@ -210,7 +287,7 @@ where
                 Some(prec) if min_precedence > prec => break,
                 Some(prec) => {
                     _ = scanner.next();
-                    compile_precedence(error, chunk, scanner, heap, prec + 1)?;
+                    expr_precedence(error, chunk, scanner, heap, prec + 1)?;
                     write_chunk_binary_ops(token, chunk);
                 }
             },
@@ -218,6 +295,23 @@ where
     }
 
     Ok(())
+}
+
+// Do extra reporting logic instead of just From
+fn adapt_scanner_error<T, R>(
+    result: Result<T, scanner::Error>,
+    error: &mut ErrorHandler<R>,
+) -> Result<T, CompilePanic>
+where
+    R: Reporter,
+{
+    match result {
+        Ok(k) => Ok(k),
+        Err(e) => {
+            error.reporter.report(e.pos, "unrecognized token");
+            Err(COMPILE_PANIC)
+        }
+    }
 }
 
 /* The table from the book

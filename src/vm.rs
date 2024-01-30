@@ -229,6 +229,13 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 OpCode::Pop => {
                     stack.pop()?;
                 }
+                OpCode::DefineGlobal => {
+                    let constant = self.read_constant(chunk, ip)?;
+                    let string =
+                        value_to_string(constant).expect("invalid bytecode: var constant broken");
+                    let value = stack.pop()?;
+                    self.variables.insert(string, value);
+                }
             }
         }
     }
@@ -288,4 +295,17 @@ fn read_constant(chunk: &Chunk, offset: u8) -> Result<Value> {
         .get(usize::from(offset))
         .context("out of bound constant access")
         .cloned()
+}
+
+// Used during variable definition when we know the structure
+fn value_to_string(v: Value) -> Option<String> {
+    if let Value::Object(obj_ptr) = v {
+        unsafe {
+            match &*obj_ptr {
+                Object::String(bs) => Some(std::str::from_utf8_unchecked(bs).to_string()),
+            }
+        }
+    } else {
+        None
+    }
 }
