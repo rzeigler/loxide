@@ -73,7 +73,78 @@ fn compile_stream<'heap, R>(
 where
     R: Reporter,
 {
-    expr(error, chunk, scanner, heap)
+    while !scanner.at_eof() {
+        declaration(error, chunk, scanner, heap);
+    }
+
+    Ok(())
+}
+
+fn declaration<R>(
+    error: &mut ErrorHandler<R>,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    statement(error, chunk, scanner, heap)
+}
+
+fn statement<R>(
+    error: &mut ErrorHandler<R>,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    match scanner.peek() {
+        Err(e) => error.report(e.pos, "unrecognized token"),
+        Ok(Token(TokenType::Keyword(Keyword::Print), _)) => {
+            print_statement(error, chunk, scanner, heap)
+        }
+        Ok(_) => expr_statement(error, chunk, scanner, heap),
+    }
+}
+
+fn print_statement<R>(
+    error: &mut ErrorHandler<R>,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let print = scanner.next().unwrap();
+    expr(error, chunk, scanner, heap)?;
+    expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
+    chunk.emit_print(print.1.line);
+
+    Ok(())
+}
+
+fn expr_statement<R>(
+    error: &mut ErrorHandler<R>,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let line = match scanner.peek() {
+        Ok(token) => token.1.line,
+        Err(e) => e.pos.line,
+    };
+    expr(error, chunk, scanner, heap)?;
+    expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
+    chunk.emit_pop(line);
+
+    Ok(())
 }
 
 // I have diverged from lox's implementation slightly something similar https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html

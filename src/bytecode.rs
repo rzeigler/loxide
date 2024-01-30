@@ -16,6 +16,8 @@ pub enum OpCode {
     Subtract,
     Multiply,
     Divide,
+    Print,
+    Pop,
     Return, // Return goes last as the sentinel for maximum opcode
 }
 
@@ -122,6 +124,16 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    pub fn emit_print(&mut self, line: usize) {
+        self.code.push(OpCode::Print as u8);
+        self.lines.push(line);
+    }
+
+    pub fn emit_pop(&mut self, line: usize) {
+        self.code.push(OpCode::Pop as u8);
+        self.lines.push(line);
+    }
+
     fn add_constant(&mut self, constant: Value) -> u8 {
         if self.constants.len() == u8::MAX.into() {
             panic!("constant pool exhausted");
@@ -159,6 +171,8 @@ impl Chunk {
                 OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide => {
                     self.simple_inst(offset)
                 }
+                // The statement codes
+                OpCode::Print | OpCode::Pop => self.simple_inst(offset),
                 OpCode::Constant => self.constant_inst(result, offset),
                 OpCode::Return => self.simple_inst(offset),
             }

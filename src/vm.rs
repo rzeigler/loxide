@@ -1,5 +1,5 @@
 use core::slice;
-use std::{fmt::Debug, mem::MaybeUninit, path::Display};
+use std::{collections::HashMap, fmt::Debug, mem::MaybeUninit};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -56,11 +56,15 @@ impl<const LIMIT: usize> Debug for Stack<LIMIT> {
 
 pub struct VM<const TRACE_EXEC: bool = false> {
     heap: Heap,
+    variables: HashMap<String, Value>,
 }
 
 impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
     pub fn new(heap: Heap) -> VM<TRACE_EXEC> {
-        VM { heap }
+        VM {
+            heap,
+            variables: HashMap::new(),
+        }
     }
 
     pub fn interpret(&mut self, chunk: &Chunk) -> Result<()> {
@@ -103,7 +107,6 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
             let last_ip = *ip;
             match self.read_inst(chunk, ip)? {
                 OpCode::Return => {
-                    eprintln!("\treturn={:?}", stack.pop()?);
                     return Ok(());
                 }
                 OpCode::Constant => {
@@ -218,6 +221,13 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                             last_ip,
                         ));
                     }
+                }
+                OpCode::Print => {
+                    let v = stack.pop()?;
+                    println!("{}", v);
+                }
+                OpCode::Pop => {
+                    stack.pop()?;
                 }
             }
         }
