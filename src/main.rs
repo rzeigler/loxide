@@ -1,4 +1,4 @@
-#![feature(alloc_layout_extra)]
+#![feature(alloc_layout_extra, let_chains)]
 
 mod bytecode;
 mod compiler;

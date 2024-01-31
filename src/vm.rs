@@ -246,6 +246,17 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         .ok_or_else(|| anyhow!("unknown variable"))?;
                     stack.push(value.clone())?;
                 }
+                OpCode::SetGlobal => {
+                    let constant = self.read_constant(chunk, ip)?;
+                    let string =
+                        value_to_string(constant).expect("invalid bytecode: var constant broken");
+                    let value = stack.pop()?;
+                    if let None = self.variables.insert(string.clone(), value) {
+                        // If not defined, then erase what we did and raise the error
+                        self.variables.remove(&string);
+                        return Err(raise_error(chunk, "undefined variable", last_ip));
+                    }
+                }
             }
         }
     }

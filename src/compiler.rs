@@ -131,7 +131,7 @@ fn synchronize(scanner: &mut Scanner) {
                     // don't consume and break
                     return;
                 }
-                _ => {} // Keep consuming
+                _ => scanner.eat(), // Keep consuming
             }
         } else {
             // Token was an error, so we should consume it
@@ -270,7 +270,18 @@ where
         Token(TokenType::Identifier(identifier), pos) => {
             let ident_str = Value::Object(heap.alloc_string_in_heap(identifier));
             let ident_constant = chunk.add_constant(ident_str);
-            chunk.emit_get_global(ident_constant, pos.line);
+            // Try and peek to see if we are the right side of an equals
+            if let Token(TokenType::Symbol(Symbol::Equal), pos) =
+                adapt_scanner_error(scanner.peek(), error)?
+                // Only allow in assignment position
+                && min_precedence <= 1
+            {
+                scanner.eat();
+                expr_precedence(error, chunk, scanner, heap, 2)?;
+                chunk.emit_set_global(ident_constant, pos.line);
+            } else {
+                chunk.emit_get_global(ident_constant, pos.line);
+            }
         }
         Token(TokenType::String(string), pos) => {
             let str_obj = heap.alloc_string_in_heap(string);
@@ -356,7 +367,8 @@ fn binary_prec(token: TokenType) -> Option<u8> {
             Symbol::Plus | Symbol::Minus => Some(6),
             Symbol::Less | Symbol::LessEqual | Symbol::Greater | Symbol::GreaterEqual => Some(5),
             Symbol::EqualEqual | Symbol::BangEqual => Some(4),
-            Symbol::Equal => Some(1),
+            // We handle equality precedence directly in the expr_precedence leading
+            // Symbol::Equal => Some(1),
             _ => None,
         },
         TokenType::Keyword(key) => match key {
