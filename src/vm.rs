@@ -236,6 +236,16 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     let value = stack.pop()?;
                     self.variables.insert(string, value);
                 }
+                OpCode::GetGlobal => {
+                    let constant = self.read_constant(chunk, ip)?;
+                    let string =
+                        value_to_string(constant).expect("invalid bytecode: var constant broken");
+                    let value = self
+                        .variables
+                        .get(&string)
+                        .ok_or_else(|| anyhow!("unknown variable"))?;
+                    stack.push(value.clone())?;
+                }
             }
         }
     }

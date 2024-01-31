@@ -181,12 +181,11 @@ fn statement<R>(
 where
     R: Reporter,
 {
-    match scanner.peek() {
-        Err(e) => error.report(e.pos, "unrecognized token"),
-        Ok(Token(TokenType::Keyword(Keyword::Print), _)) => {
+    match adapt_scanner_error(scanner.peek(), error)? {
+        Token(TokenType::Keyword(Keyword::Print), _) => {
             print_statement(error, chunk, scanner, heap)
         }
-        Ok(_) => expr_statement(error, chunk, scanner, heap),
+        _ => expr_statement(error, chunk, scanner, heap),
     }
 }
 
@@ -268,6 +267,11 @@ where
         Token(TokenType::Keyword(Keyword::True), pos) => chunk.emit_bool(true, pos.line),
         Token(TokenType::Keyword(Keyword::False), pos) => chunk.emit_bool(false, pos.line),
         Token(TokenType::Keyword(Keyword::Nil), pos) => chunk.emit_nil(pos.line),
+        Token(TokenType::Identifier(identifier), pos) => {
+            let ident_str = Value::Object(heap.alloc_string_in_heap(identifier));
+            let ident_constant = chunk.add_constant(ident_str);
+            chunk.emit_get_global(ident_constant, pos.line);
+        }
         Token(TokenType::String(string), pos) => {
             let str_obj = heap.alloc_string_in_heap(string);
             chunk.emit_constant(Value::Object(str_obj), pos.line);
@@ -277,20 +281,15 @@ where
 
     // Equivalent to the while (prec <= getRule(token).precedence)
     loop {
-        match scanner.peek() {
-            Err(e) => {
+        let token = adapt_scanner_error(scanner.peek(), error)?;
+        match binary_prec(token.0.clone()) {
+            None => break,
+            Some(prec) if min_precedence > prec => break,
+            Some(prec) => {
                 _ = scanner.next();
-                return error.report(e.pos, "unrecognized token");
+                expr_precedence(error, chunk, scanner, heap, prec + 1)?;
+                write_chunk_binary_ops(token, chunk);
             }
-            Ok(token) => match binary_prec(token.0.clone()) {
-                None => break,
-                Some(prec) if min_precedence > prec => break,
-                Some(prec) => {
-                    _ = scanner.next();
-                    expr_precedence(error, chunk, scanner, heap, prec + 1)?;
-                    write_chunk_binary_ops(token, chunk);
-                }
-            },
         }
     }
 

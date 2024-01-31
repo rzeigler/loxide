@@ -19,6 +19,7 @@ pub enum OpCode {
     Print,
     Pop,
     DefineGlobal,
+    GetGlobal,
     Return, // Return goes last as the sentinel for maximum opcode
 }
 
@@ -143,6 +144,14 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    pub fn emit_get_global(&mut self, global: u8, line: usize) {
+        self.code.push(OpCode::GetGlobal as u8);
+        self.code.push(global);
+
+        self.lines.push(line);
+        self.lines.push(line);
+    }
+
     pub fn add_constant(&mut self, constant: Value) -> u8 {
         if self.constants.len() == u8::MAX.into() {
             panic!("constant pool exhausted");
@@ -182,7 +191,7 @@ impl Chunk {
                 }
                 // The statement codes
                 OpCode::Print | OpCode::Pop => self.simple_inst(offset),
-                OpCode::DefineGlobal => self.constant_inst(result, offset),
+                OpCode::DefineGlobal | OpCode::GetGlobal => self.constant_inst(result, offset),
                 OpCode::Constant => self.constant_inst(result, offset),
                 OpCode::Return => self.simple_inst(offset),
             }
