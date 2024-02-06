@@ -40,6 +40,15 @@ impl<const LIMIT: usize> Stack<LIMIT> {
             Ok(v)
         }
     }
+
+    pub fn peek(&self) -> Result<Value> {
+        if self.top == 0 {
+            bail!("stack empty");
+        } else {
+            let v = unsafe { self.stack[self.top - 1].assume_init() };
+            Ok(v)
+        }
+    }
 }
 
 impl<const LIMIT: usize> Debug for Stack<LIMIT> {
@@ -280,7 +289,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 }
                 OpCode::JumpIfFalse => {
                     let jump_len = self.read_jump_len(chunk, ip)?;
-                    let value = stack.pop()?;
+                    let value = stack.peek()?;
                     if !value.to_bool() {
                         *ip += jump_len;
                     }
