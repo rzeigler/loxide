@@ -369,22 +369,22 @@ where
     expr(error, compile_state, chunk, scanner, heap)?;
     expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
 
-    let then_jump = chunk.emit_jump_if_false(pos.line);
+    let skip_if_jump = chunk.emit_jump_if_false(pos.line);
+    chunk.emit_pop(pos.line);
 
     statement(error, compile_state, chunk, scanner, heap)?;
 
-    if !chunk.patch_jump(then_jump) {
+    let skip_else_jump = chunk.emit_jump(pos.line);
+    if !chunk.patch_jump(skip_if_jump) {
         return error.report(pos, "branch jumps too far");
     }
-
+    chunk.emit_pop(pos.line);
+    // There's always a pop that we shouldn't jump over
     if let Ok(Token(TokenType::Keyword(Keyword::Else), pos)) = scanner.next() {
-        let else_jump = chunk.emit_jump(pos.line);
-
         statement(error, compile_state, chunk, scanner, heap)?;
-
-        if !chunk.patch_jump(else_jump) {
-            return error.report(pos, "branch jumps too far");
-        }
+    }
+    if !chunk.patch_jump(skip_else_jump) {
+        return error.report(pos, "branch jumps to far");
     }
 
     Ok(())

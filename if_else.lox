@@ -9,3 +9,11 @@ if (false) {
 } else {
     print "wee!";
 }
+
+if (false) {
+    print "boo!";
+} else if (true) {
+    print "wee!";
+} else {
+    print "boo!";
+}
