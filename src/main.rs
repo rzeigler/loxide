@@ -26,9 +26,9 @@ use vm::VM;
 fn main() -> Result<()> {
     let args = args().collect::<Vec<_>>();
     if args.len() == 2 {
-        run::<false>(&args[1])?;
+        run::<true>(&args[1])?;
     } else if args.len() == 1 {
-        run_prompt::<false>()?;
+        run_prompt::<true>()?;
     } else {
         eprintln!("Usage: loxide <script>");
         bail!("issue");

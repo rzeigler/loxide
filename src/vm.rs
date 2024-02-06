@@ -1,5 +1,5 @@
 use core::slice;
-use std::{collections::HashMap, fmt::Debug, mem::MaybeUninit};
+use std::{fmt::Debug, mem::MaybeUninit};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -94,6 +94,15 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         let offset = read_code_at_ip(chunk, *ip)?;
         *ip += 1;
         Ok(offset.into())
+    }
+
+    fn read_jump_len(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<usize> {
+        let high_byte = read_code_at_ip(chunk, *ip)?;
+        let low_byte = read_code_at_ip(chunk, *ip + 1)?;
+        *ip += 2;
+
+        let count = ((high_byte as u16) << 8) | (low_byte as u16);
+        Ok(count.into())
     }
 
     fn run<const STACK: usize>(
@@ -268,6 +277,13 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     let stack_slot = self.read_stack_slot(chunk, ip)?;
                     let value = stack.pop()?;
                     stack.stack[stack_slot].write(value);
+                }
+                OpCode::JumpIfFalse => {
+                    let jump_len = self.read_jump_len(chunk, ip)?;
+                    let value = stack.pop()?;
+                    if !value.to_bool() {
+                        *ip += jump_len;
+                    }
                 }
             }
         }

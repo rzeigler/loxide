@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, Result};
 use crate::{
     bytecode::BinaryOp,
     heap::{Heap, Value},
-    reporter::{self, Reporter},
+    reporter::Reporter,
     scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
 
@@ -288,6 +288,9 @@ where
         Token(TokenType::Keyword(Keyword::Print), _) => {
             print_statement(error, compile_state, chunk, scanner, heap)
         }
+        Token(TokenType::Keyword(Keyword::If), _) => {
+            if_statement(error, compile_state, chunk, scanner, heap)
+        }
         Token(TokenType::Symbol(Symbol::LeftBrace), pos) => {
             compile_state.begin_scope();
             let result = block(error, compile_state, chunk, scanner, heap);
@@ -334,11 +337,48 @@ fn print_statement<R>(
 where
     R: Reporter,
 {
-    let print = scanner.next().unwrap();
+    let pos = if let Ok(Token(TokenType::Keyword(Keyword::Print), print_pos)) = scanner.next() {
+        print_pos
+    } else {
+        unreachable!();
+    };
     expr(error, compile_state, chunk, scanner, heap)?;
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
-    chunk.emit_print(print.1.line);
+    chunk.emit_print(pos.line);
 
+    Ok(())
+}
+
+fn if_statement<R>(
+    error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let pos = if let Ok(Token(TokenType::Keyword(Keyword::If), pos)) = scanner.next() {
+        pos
+    } else {
+        // Already tested this above
+        unreachable!()
+    };
+    expect_next_token(error, TokenType::Symbol(Symbol::LeftParen), scanner)?;
+    expr(error, compile_state, chunk, scanner, heap)?;
+    expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
+
+    let then_jump = chunk.emit_jump_if_false(pos.line);
+
+    statement(error, compile_state, chunk, scanner, heap)?;
+
+    let skip_len = u16::try_from(chunk.code().len() - then_jump - 2).or_else(|_| {
+        error
+            .report(pos, "branch jumps too far")
+            .map(|_| unreachable!())
+    })?;
+    chunk.patch_jump(then_jump, skip_len);
     Ok(())
 }
 

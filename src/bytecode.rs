@@ -23,6 +23,7 @@ pub enum OpCode {
     SetGlobal,
     GetLocal,
     SetLocal,
+    JumpIfFalse,
     Return, // Return goes last as the sentinel for maximum opcode
 }
 
@@ -179,6 +180,27 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    pub fn emit_jump_if_false(&mut self, line: usize) -> usize {
+        self.code.push(OpCode::JumpIfFalse as u8);
+        self.code.push(u8::MAX);
+        self.code.push(u8::MAX);
+
+        self.lines.push(line);
+        self.lines.push(line);
+        self.lines.push(line);
+
+        self.code.len() - 2
+    }
+
+    pub fn patch_jump(&mut self, offset: usize, distance: u16) {
+        // little endian
+        let high_byte = (distance >> 8) as u8;
+        let low_byte = distance as u8;
+
+        self.code[offset] = high_byte;
+        self.code[offset + 1] = low_byte;
+    }
+
     pub fn add_constant(&mut self, constant: Value) -> u8 {
         if self.constants.len() == u8::MAX.into() {
             panic!("constant pool exhausted");
@@ -223,6 +245,7 @@ impl Chunk {
                 }
                 OpCode::SetLocal | OpCode::GetLocal => self.local_inst(result, offset),
                 OpCode::Constant => self.constant_inst(result, offset),
+                OpCode::JumpIfFalse => self.jump_inst(result, offset),
                 OpCode::Return => self.zero_arg_inst(offset),
             }
         } else {
@@ -244,6 +267,14 @@ impl Chunk {
             self.constants[self.code[offset + 1] as usize]
         ));
         offset + 2
+    }
+
+    fn jump_inst(&self, target: &mut String, offset: usize) -> usize {
+        let high_byte = self.code[offset + 1];
+        let low_byte = self.code[offset + 2];
+        let skip_len = ((high_byte as u16) << 8) | low_byte as u16;
+        target.push_str(&format!("{} ", skip_len));
+        offset + 3
     }
 
     fn local_inst(&self, target: &mut String, offset: usize) -> usize {
