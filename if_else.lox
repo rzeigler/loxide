@@ -1,7 +1,11 @@
 if (true) {
     print "wee!";
+} else {
+    print "boo!";
 }
 
 if (false) {
     print "boo!";
+} else {
+    print "wee!";
 }

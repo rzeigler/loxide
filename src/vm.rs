@@ -285,6 +285,10 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         *ip += jump_len;
                     }
                 }
+                OpCode::Jump => {
+                    let jump_len = self.read_jump_len(chunk, ip)?;
+                    *ip += jump_len
+                }
             }
         }
     }

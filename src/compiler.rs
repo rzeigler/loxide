@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, Result};
 use crate::{
     bytecode::BinaryOp,
     heap::{Heap, Value},
-    reporter::Reporter,
+    reporter::{self, Reporter},
     scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
 
@@ -373,12 +373,20 @@ where
 
     statement(error, compile_state, chunk, scanner, heap)?;
 
-    let skip_len = u16::try_from(chunk.code().len() - then_jump - 2).or_else(|_| {
-        error
-            .report(pos, "branch jumps too far")
-            .map(|_| unreachable!())
-    })?;
-    chunk.patch_jump(then_jump, skip_len);
+    if !chunk.patch_jump(then_jump) {
+        return error.report(pos, "branch jumps too far");
+    }
+
+    if let Ok(Token(TokenType::Keyword(Keyword::Else), pos)) = scanner.next() {
+        let else_jump = chunk.emit_jump(pos.line);
+
+        statement(error, compile_state, chunk, scanner, heap)?;
+
+        if !chunk.patch_jump(else_jump) {
+            return error.report(pos, "branch jumps too far");
+        }
+    }
+
     Ok(())
 }
 

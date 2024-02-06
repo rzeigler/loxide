@@ -24,6 +24,7 @@ pub enum OpCode {
     GetLocal,
     SetLocal,
     JumpIfFalse,
+    Jump,
     Return, // Return goes last as the sentinel for maximum opcode
 }
 
@@ -192,13 +193,32 @@ impl Chunk {
         self.code.len() - 2
     }
 
-    pub fn patch_jump(&mut self, offset: usize, distance: u16) {
-        // little endian
-        let high_byte = (distance >> 8) as u8;
-        let low_byte = distance as u8;
+    pub fn emit_jump(&mut self, line: usize) -> usize {
+        self.code.push(OpCode::Jump as u8);
+        self.code.push(u8::MAX);
+        self.code.push(u8::MAX);
 
-        self.code[offset] = high_byte;
-        self.code[offset + 1] = low_byte;
+        self.lines.push(line);
+        self.lines.push(line);
+        self.lines.push(line);
+
+        self.code.len() - 2
+    }
+
+    #[must_use]
+    pub fn patch_jump(&mut self, jump_offset: usize) -> bool {
+        let distance = self.code.len() - jump_offset - 2;
+        if distance > u16::MAX.into() {
+            false
+        } else {
+            // little endian
+            let high_byte = (distance >> 8) as u8;
+            let low_byte = distance as u8;
+
+            self.code[jump_offset] = high_byte;
+            self.code[jump_offset + 1] = low_byte;
+            true
+        }
     }
 
     pub fn add_constant(&mut self, constant: Value) -> u8 {
@@ -245,7 +265,7 @@ impl Chunk {
                 }
                 OpCode::SetLocal | OpCode::GetLocal => self.local_inst(result, offset),
                 OpCode::Constant => self.constant_inst(result, offset),
-                OpCode::JumpIfFalse => self.jump_inst(result, offset),
+                OpCode::JumpIfFalse | OpCode::Jump => self.jump_inst(result, 1, offset),
                 OpCode::Return => self.zero_arg_inst(offset),
             }
         } else {
@@ -269,11 +289,15 @@ impl Chunk {
         offset + 2
     }
 
-    fn jump_inst(&self, target: &mut String, offset: usize) -> usize {
+    fn jump_inst(&self, target: &mut String, sign: u8, offset: usize) -> usize {
         let high_byte = self.code[offset + 1];
         let low_byte = self.code[offset + 2];
-        let skip_len = ((high_byte as u16) << 8) | low_byte as u16;
-        target.push_str(&format!("{} ", skip_len));
+        let jump_len = ((high_byte as u16) << 8) | low_byte as u16;
+        target.push_str(&format!(
+            "{} -> {} ",
+            offset,
+            offset + 3 + usize::from(sign) * usize::from(jump_len)
+        ));
         offset + 3
     }
 
