@@ -21,6 +21,8 @@ pub enum OpCode {
     DefineGlobal,
     GetGlobal,
     SetGlobal,
+    GetLocal,
+    SetLocal,
     Return, // Return goes last as the sentinel for maximum opcode
 }
 
@@ -161,6 +163,22 @@ impl Chunk {
         self.lines.push(line);
     }
 
+    pub fn emit_get_local(&mut self, local: u8, line: usize) {
+        self.code.push(OpCode::GetLocal as u8);
+        self.code.push(local);
+
+        self.lines.push(line);
+        self.lines.push(line);
+    }
+
+    pub fn emit_set_local(&mut self, local: u8, line: usize) {
+        self.code.push(OpCode::SetLocal as u8);
+        self.code.push(local);
+
+        self.lines.push(line);
+        self.lines.push(line);
+    }
+
     pub fn add_constant(&mut self, constant: Value) -> u8 {
         if self.constants.len() == u8::MAX.into() {
             panic!("constant pool exhausted");
@@ -191,20 +209,21 @@ impl Chunk {
             // Nicely pad the result string
             result.push_str(&format!("{:<10} ", &format!("{:?}", op)));
             match op {
-                OpCode::Negate | OpCode::Not => self.simple_inst(offset),
-                OpCode::True | OpCode::False => self.simple_inst(offset),
-                OpCode::Nil => self.simple_inst(offset),
-                OpCode::Less | OpCode::Greater | OpCode::Equal => self.simple_inst(offset),
+                OpCode::Negate | OpCode::Not => self.zero_arg_inst(offset),
+                OpCode::True | OpCode::False => self.zero_arg_inst(offset),
+                OpCode::Nil => self.zero_arg_inst(offset),
+                OpCode::Less | OpCode::Greater | OpCode::Equal => self.zero_arg_inst(offset),
                 OpCode::Add | OpCode::Subtract | OpCode::Multiply | OpCode::Divide => {
-                    self.simple_inst(offset)
+                    self.zero_arg_inst(offset)
                 }
                 // The statement codes
-                OpCode::Print | OpCode::Pop => self.simple_inst(offset),
+                OpCode::Print | OpCode::Pop => self.zero_arg_inst(offset),
                 OpCode::DefineGlobal | OpCode::GetGlobal | OpCode::SetGlobal => {
                     self.constant_inst(result, offset)
                 }
+                OpCode::SetLocal | OpCode::GetLocal => self.local_inst(result, offset),
                 OpCode::Constant => self.constant_inst(result, offset),
-                OpCode::Return => self.simple_inst(offset),
+                OpCode::Return => self.zero_arg_inst(offset),
             }
         } else {
             println!("INVALID");
@@ -215,7 +234,7 @@ impl Chunk {
     }
 
     // We just assume all these things aren't malformed
-    fn simple_inst(&self, offset: usize) -> usize {
+    fn zero_arg_inst(&self, offset: usize) -> usize {
         offset + 1
     }
 
@@ -224,6 +243,11 @@ impl Chunk {
             "{} ",
             self.constants[self.code[offset + 1] as usize]
         ));
+        offset + 2
+    }
+
+    fn local_inst(&self, target: &mut String, offset: usize) -> usize {
+        target.push_str(&format!("{} ", self.code[offset + 1]));
         offset + 2
     }
 }

@@ -1,4 +1,4 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Result};
 
 use crate::{
     bytecode::BinaryOp,
@@ -42,9 +42,16 @@ where
 {
     let mut scanner = Scanner::new(source);
     let mut error = ErrorHandler::new(reporter);
+    let mut compile_state = CompileState::new();
     let mut chunk = Chunk::new();
 
-    if let Err(_) = compile_stream(&mut error, &mut chunk, &mut scanner, heap) {
+    if let Err(_) = compile_stream(
+        &mut error,
+        &mut compile_state,
+        &mut chunk,
+        &mut scanner,
+        heap,
+    ) {
         bail!("compiler error");
     }
 
@@ -61,8 +68,95 @@ pub(crate) struct CompilePanic {}
 
 const COMPILE_PANIC: CompilePanic = CompilePanic {};
 
+struct CompileState {
+    globals: Vec<String>,
+    locals: Vec<Local>,
+    scope_depth: usize,
+}
+
+impl CompileState {
+    fn new() -> CompileState {
+        CompileState {
+            globals: Vec::new(),
+            locals: Vec::new(),
+            scope_depth: 0,
+        }
+    }
+
+    fn begin_scope(&mut self) {
+        self.scope_depth += 1;
+    }
+
+    fn end_scope(&mut self) -> usize {
+        self.scope_depth -= 1;
+
+        let mut pops = 0;
+        while self
+            .locals
+            .last()
+            .map_or(false, |l| l.depth > self.scope_depth)
+        {
+            pops += 1;
+            self.locals.pop();
+        }
+
+        pops
+    }
+
+    fn define_local<R>(
+        &mut self,
+        var: String,
+        pos: Pos,
+        reporter: &mut ErrorHandler<R>,
+    ) -> Result<(), CompilePanic>
+    where
+        R: Reporter,
+    {
+        if let Some(local) = self.locals.iter().rev().find(|local| local.name == var) {
+            if local.depth == self.scope_depth {
+                return reporter.report(pos, "redefining an existing variable");
+            }
+        }
+        self.locals.push(Local {
+            name: var,
+            depth: self.scope_depth,
+        });
+        Ok(())
+    }
+
+    fn resolve_local(&self, name: &str) -> Option<usize> {
+        self.locals
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, local)| local.name == name)
+            .map(|(i, _)| i)
+    }
+
+    fn define_global(&mut self, var: &str) -> usize {
+        if self.resolve_global(var).is_none() {
+            self.globals.push(var.to_string());
+        }
+        self.resolve_global(var).unwrap()
+    }
+
+    fn resolve_global(&self, name: &str) -> Option<usize> {
+        self.globals
+            .iter()
+            .enumerate()
+            .find(|(_, global)| *global == name)
+            .map(|(i, _)| i)
+    }
+}
+
+struct Local {
+    name: String,
+    depth: usize,
+}
+
 fn compile_stream<'heap, R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &'heap mut Heap,
@@ -71,7 +165,7 @@ where
     R: Reporter,
 {
     while !scanner.at_eof() {
-        declaration(error, chunk, scanner, heap);
+        declaration(error, compile_state, chunk, scanner, heap);
     }
 
     if error.has_errored {
@@ -85,6 +179,7 @@ where
 // Higher levels should inspect the ErrorHandler state to determine if an error happened
 fn declaration<R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &mut Heap,
@@ -97,9 +192,9 @@ fn declaration<R>(
         .unwrap_or(false)
     {
         scanner.eat();
-        var_declaration(error, chunk, scanner, heap)
+        var_declaration(error, compile_state, chunk, scanner, heap)
     } else {
-        statement(error, chunk, scanner, heap)
+        statement(error, compile_state, chunk, scanner, heap)
     };
 
     match result {
@@ -142,6 +237,7 @@ fn synchronize(scanner: &mut Scanner) {
 
 fn var_declaration<R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &mut Heap,
@@ -155,25 +251,32 @@ where
         Err(err) => return error.report(err.pos, "unrecognized token"),
     };
 
-    let ident_str = Value::Object(heap.alloc_string_in_heap(identifier));
-    let ident_constant = chunk.add_constant(ident_str);
-
     if let Token(TokenType::Symbol(Symbol::Equal), _) = adapt_scanner_error(scanner.peek(), error)?
     {
         scanner.eat();
-        expr(error, chunk, scanner, heap)?;
+        expr(error, compile_state, chunk, scanner, heap)?;
     } else {
         chunk.emit_nil(pos.line);
     }
 
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
 
-    chunk.emit_define_global(ident_constant, pos.line);
-    Ok(())
+    if compile_state.scope_depth == 0 {
+        let global_slot = u8::try_from(compile_state.define_global(identifier)).or_else(|_| {
+            error
+                .report(pos, "too many globals")
+                .map(|_| unreachable!())
+        })?;
+        chunk.emit_define_global(global_slot, pos.line);
+        Ok(())
+    } else {
+        compile_state.define_local(identifier.to_string(), pos, error)
+    }
 }
 
 fn statement<R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &mut Heap,
@@ -183,14 +286,47 @@ where
 {
     match adapt_scanner_error(scanner.peek(), error)? {
         Token(TokenType::Keyword(Keyword::Print), _) => {
-            print_statement(error, chunk, scanner, heap)
+            print_statement(error, compile_state, chunk, scanner, heap)
         }
-        _ => expr_statement(error, chunk, scanner, heap),
+        Token(TokenType::Symbol(Symbol::LeftBrace), pos) => {
+            compile_state.begin_scope();
+            let result = block(error, compile_state, chunk, scanner, heap);
+            let pops = compile_state.end_scope();
+            for _ in 0..pops {
+                chunk.emit_pop(pos.line);
+            }
+            result
+        }
+        _ => expr_statement(error, compile_state, chunk, scanner, heap),
     }
+}
+
+fn block<R>(
+    error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    scanner.eat(); // eat the {
+
+    while !scanner.at_eof()
+        && !scanner
+            .peek()
+            .map_or(false, |next| next.0 == Symbol::RightBrace)
+    {
+        declaration(error, compile_state, chunk, scanner, heap)
+    }
+
+    expect_next_token(error, TokenType::Symbol(Symbol::RightBrace), scanner)
 }
 
 fn print_statement<R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &mut Heap,
@@ -199,7 +335,7 @@ where
     R: Reporter,
 {
     let print = scanner.next().unwrap();
-    expr(error, chunk, scanner, heap)?;
+    expr(error, compile_state, chunk, scanner, heap)?;
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
     chunk.emit_print(print.1.line);
 
@@ -208,6 +344,7 @@ where
 
 fn expr_statement<R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &mut Heap,
@@ -219,7 +356,7 @@ where
         Ok(token) => token.1.line,
         Err(e) => e.pos.line,
     };
-    expr(error, chunk, scanner, heap)?;
+    expr(error, compile_state, chunk, scanner, heap)?;
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
     chunk.emit_pop(line);
 
@@ -229,6 +366,7 @@ where
 // I have diverged from lox's implementation slightly something similar https://matklad.github.io/2020/04/13/simple-but-powerful-pratt-parsing.html
 fn expr<'heap, R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &'heap mut Heap,
@@ -236,11 +374,12 @@ fn expr<'heap, R>(
 where
     R: Reporter,
 {
-    expr_precedence(error, chunk, scanner, heap, 1)
+    expr_precedence(error, compile_state, chunk, scanner, heap, 1)
 }
 
 fn expr_precedence<'heap, R>(
     error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
     chunk: &mut Chunk,
     scanner: &mut Scanner,
     heap: &'heap mut Heap,
@@ -252,10 +391,10 @@ where
     match adapt_scanner_error(scanner.next(), error)? {
         Token(TokenType::Symbol(sym), pos) => {
             if sym == Symbol::LeftParen {
-                expr_precedence(error, chunk, scanner, heap, 0)?;
+                expr_precedence(error, compile_state, chunk, scanner, heap, 0)?;
                 expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
             } else {
-                expr_precedence(error, chunk, scanner, heap, unary_prec(sym))?;
+                expr_precedence(error, compile_state, chunk, scanner, heap, unary_prec(sym))?;
                 match sym {
                     Symbol::Minus => chunk.emit_negate(pos.line),
                     Symbol::Bang => chunk.emit_not(pos.line),
@@ -268,8 +407,6 @@ where
         Token(TokenType::Keyword(Keyword::False), pos) => chunk.emit_bool(false, pos.line),
         Token(TokenType::Keyword(Keyword::Nil), pos) => chunk.emit_nil(pos.line),
         Token(TokenType::Identifier(identifier), pos) => {
-            let ident_str = Value::Object(heap.alloc_string_in_heap(identifier));
-            let ident_constant = chunk.add_constant(ident_str);
             // Try and peek to see if we are the right side of an equals
             if let Token(TokenType::Symbol(Symbol::Equal), pos) =
                 adapt_scanner_error(scanner.peek(), error)?
@@ -277,10 +414,27 @@ where
                 && min_precedence <= 1
             {
                 scanner.eat();
-                expr_precedence(error, chunk, scanner, heap, 2)?;
-                chunk.emit_set_global(ident_constant, pos.line);
+                expr_precedence(error, compile_state, chunk, scanner, heap, 2)?;
+
+                // Try and resolve a local first, if its not, then I guess we are going with global
+                if let Some(local_slot) = compile_state.resolve_local(identifier) {
+                    chunk.emit_set_local(local_slot.try_into().unwrap(), pos.line);
+                } else if let Some(global_slot) = compile_state.resolve_global(identifier) {
+                    chunk.emit_set_global(global_slot.try_into().unwrap(), pos.line);
+                } else {
+                    _ = error.report(
+                        pos,
+                        &format!("unknown variable for assignment: {}", identifier),
+                    )
+                }
             } else {
-                chunk.emit_get_global(ident_constant, pos.line);
+                if let Some(local_slot) = compile_state.resolve_local(identifier) {
+                    chunk.emit_get_local(local_slot.try_into().unwrap(), pos.line);
+                } else if let Some(global_slot) = compile_state.resolve_global(identifier) {
+                    chunk.emit_get_global(global_slot.try_into().unwrap(), pos.line);
+                } else {
+                    _ = error.report(pos, &format!("unknown variable for access: {}", identifier))
+                }
             }
         }
         Token(TokenType::String(string), pos) => {
@@ -298,7 +452,7 @@ where
             Some(prec) if min_precedence > prec => break,
             Some(prec) => {
                 _ = scanner.next();
-                expr_precedence(error, chunk, scanner, heap, prec + 1)?;
+                expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
                 write_chunk_binary_ops(token, chunk);
             }
         }

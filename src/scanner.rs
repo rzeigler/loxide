@@ -26,16 +26,6 @@ pub enum ErrorType {
     UnrecognizedToken,
 }
 
-// TODO: Delete me
-impl ErrorType {
-    pub fn message(&self) -> &'static str {
-        match self {
-            Self::UnterminatedString => "unterminated string",
-            Self::UnrecognizedToken => "unrecognized token",
-        }
-    }
-}
-
 /// A token in the input stream
 /// Contains a data which is the symbol variant and a position
 /// Note that pos is always defined, but in the case of EOF will describe a location

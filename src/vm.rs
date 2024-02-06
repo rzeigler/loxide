@@ -56,14 +56,14 @@ impl<const LIMIT: usize> Debug for Stack<LIMIT> {
 
 pub struct VM<const TRACE_EXEC: bool = false> {
     heap: Heap,
-    variables: HashMap<String, Value>,
+    globals: Vec<Value>,
 }
 
 impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
     pub fn new(heap: Heap) -> VM<TRACE_EXEC> {
         VM {
             heap,
-            variables: HashMap::new(),
+            globals: Vec::new(),
         }
     }
 
@@ -90,13 +90,21 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         read_constant(chunk, offset)
     }
 
+    fn read_stack_slot(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<usize> {
+        let offset = read_code_at_ip(chunk, *ip)?;
+        *ip += 1;
+        Ok(offset.into())
+    }
+
     fn run<const STACK: usize>(
         &mut self,
         chunk: &Chunk,
         ip: &mut usize,
         stack: &mut Stack<STACK>,
     ) -> Result<()> {
-        eprintln!("==== EXEC ====");
+        if TRACE_EXEC {
+            eprintln!("==== EXEC ====");
+        }
         loop {
             if TRACE_EXEC {
                 let mut result = String::new();
@@ -230,32 +238,36 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     stack.pop()?;
                 }
                 OpCode::DefineGlobal => {
-                    let constant = self.read_constant(chunk, ip)?;
-                    let string =
-                        value_to_string(constant).expect("invalid bytecode: var constant broken");
+                    let global_slot = self.read_stack_slot(chunk, ip)?;
                     let value = stack.pop()?;
-                    self.variables.insert(string, value);
+                    if self.globals.len() == global_slot {
+                        self.globals.push(value);
+                    } else if self.globals.len() > global_slot {
+                        self.globals[global_slot] = value;
+                    } else {
+                        // global_slot definition out of order
+                        panic!("global definition out of order bug");
+                    }
                 }
                 OpCode::GetGlobal => {
-                    let constant = self.read_constant(chunk, ip)?;
-                    let string =
-                        value_to_string(constant).expect("invalid bytecode: var constant broken");
-                    let value = self
-                        .variables
-                        .get(&string)
-                        .ok_or_else(|| anyhow!("unknown variable"))?;
-                    stack.push(value.clone())?;
+                    let global_slot = self.read_stack_slot(chunk, ip)?;
+                    let value = self.globals[global_slot];
+                    stack.push(value)?;
                 }
                 OpCode::SetGlobal => {
-                    let constant = self.read_constant(chunk, ip)?;
-                    let string =
-                        value_to_string(constant).expect("invalid bytecode: var constant broken");
+                    let global_slot = self.read_stack_slot(chunk, ip)?;
                     let value = stack.pop()?;
-                    if let None = self.variables.insert(string.clone(), value) {
-                        // If not defined, then erase what we did and raise the error
-                        self.variables.remove(&string);
-                        return Err(raise_error(chunk, "undefined variable", last_ip));
-                    }
+                    self.globals[global_slot] = value;
+                }
+                OpCode::GetLocal => {
+                    let stack_slot = self.read_stack_slot(chunk, ip)?;
+                    let value = unsafe { stack.stack[stack_slot].assume_init() };
+                    stack.push(value)?;
+                }
+                OpCode::SetLocal => {
+                    let stack_slot = self.read_stack_slot(chunk, ip)?;
+                    let value = stack.pop()?;
+                    stack.stack[stack_slot].write(value);
                 }
             }
         }

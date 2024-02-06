@@ -7,12 +7,15 @@ mod reporter;
 mod scanner;
 mod vm;
 
+use std::env::args;
+use std::fs::File;
 use std::io::prelude::*;
 use std::io::stderr;
 use std::io::stdout;
 use std::io::BufReader;
 
-use anyhow::Result;
+use anyhow::bail;
+use anyhow::{Context, Result};
 
 use bytecode::Chunk;
 use compiler::compile;
@@ -21,7 +24,40 @@ use reporter::WriteReporter;
 use vm::VM;
 
 fn main() -> Result<()> {
-    run_prompt::<true>()?;
+    let args = args().collect::<Vec<_>>();
+    if args.len() == 2 {
+        run::<false>(&args[1])?;
+    } else if args.len() == 1 {
+        run_prompt::<false>()?;
+    } else {
+        eprintln!("Usage: loxide <script>");
+        bail!("issue");
+    }
+
+    Ok(())
+}
+
+fn run<const DEBUG: bool>(path: &str) -> Result<()> {
+    let mut file = File::open(&path).context("failed to open the file")?;
+    let mut data = String::new();
+    _ = file.read_to_string(&mut data)?;
+
+    let mut heap = Heap::new();
+    let mut vm: VM<DEBUG> = VM::new(heap.clone());
+    let mut reporter = WriteReporter::new(stderr().lock());
+
+    match compile(&data, &mut reporter, &mut heap) {
+        Ok(chunk) => {
+            chunk.disassemble(path);
+            if let Err(e) = vm.interpret(&chunk) {
+                eprintln!("{}", e);
+            }
+        }
+        Err(err) => {
+            eprintln!("{}", err);
+        }
+    };
+
     Ok(())
 }
 
