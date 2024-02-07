@@ -436,6 +436,8 @@ fn expr_precedence<'heap, R>(
 where
     R: Reporter,
 {
+    let can_assign = min_precedence <= 1;
+
     match adapt_scanner_error(scanner.next(), error)? {
         Token(TokenType::Symbol(sym), pos) => {
             if sym == Symbol::LeftParen {
@@ -459,7 +461,7 @@ where
             if let Token(TokenType::Symbol(Symbol::Equal), pos) =
                 adapt_scanner_error(scanner.peek(), error)?
                 // Only allow in assignment position
-                && min_precedence <= 1
+                && can_assign
             {
                 scanner.eat();
                 expr_precedence(error, compile_state, chunk, scanner, heap, 2)?;
@@ -494,14 +496,84 @@ where
 
     // Equivalent to the while (prec <= getRule(token).precedence)
     loop {
-        let token = adapt_scanner_error(scanner.peek(), error)?;
-        match binary_prec(token.0.clone()) {
+        let Token(ttype, pos) = adapt_scanner_error(scanner.peek(), error)?;
+        match binary_prec(ttype.clone()) {
             None => break,
             Some(prec) if min_precedence > prec => break,
             Some(prec) => {
-                _ = scanner.next();
-                expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
-                write_chunk_binary_ops(token, chunk);
+                scanner.eat();
+                match ttype {
+                    TokenType::Symbol(sym) => match sym {
+                        Symbol::Plus => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Add, pos.line);
+                        }
+                        Symbol::Minus => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Subtract, pos.line)
+                        }
+                        Symbol::Star => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Multiply, pos.line)
+                        }
+                        Symbol::Slash => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Divide, pos.line)
+                        }
+                        Symbol::EqualEqual => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Equal, pos.line)
+                        }
+                        Symbol::BangEqual => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Equal, pos.line);
+                            chunk.emit_negate(pos.line);
+                        }
+                        Symbol::Greater => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Greater, pos.line)
+                        }
+                        Symbol::GreaterEqual => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Less, pos.line);
+                            chunk.emit_not(pos.line);
+                        }
+                        Symbol::Less => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Less, pos.line)
+                        }
+                        Symbol::LessEqual => {
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            chunk.emit_binary_op(BinaryOp::Greater, pos.line);
+                            chunk.emit_not(pos.line);
+                        }
+                        _ => unreachable!(),
+                    },
+                    TokenType::Keyword(key) => match key {
+                        Keyword::And => {
+                            let end_jump = chunk.emit_jump_if_false(pos.line);
+                            chunk.emit_pop(pos.line);
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            if !chunk.patch_jump(end_jump) {
+                                return error.report(pos, "cannot jump that far");
+                            }
+                        }
+                        Keyword::Or => {
+                            let else_jump = chunk.emit_jump_if_false(pos.line);
+                            let end_jump = chunk.emit_jump(pos.line);
+                            if !chunk.patch_jump(else_jump) {
+                                return error.report(pos, "cannot jump that far");
+                            }
+                            chunk.emit_pop(pos.line);
+                            expr_precedence(error, compile_state, chunk, scanner, heap, prec + 1)?;
+                            if !chunk.patch_jump(end_jump) {
+                                return error.report(pos, "cannot jump that far");
+                            }
+                        }
+                        _ => unreachable!(),
+                    },
+                    _ => unreachable!(),
+                }
             }
         }
     }
@@ -579,35 +651,5 @@ fn binary_prec(token: TokenType) -> Option<u8> {
             _ => None,
         },
         _ => None,
-    }
-}
-
-fn write_chunk_binary_ops(token: Token, chunk: &mut Chunk) {
-    let Token(ttype, pos) = token;
-    match ttype {
-        TokenType::Symbol(sym) => match sym {
-            Symbol::Plus => chunk.emit_binary_op(BinaryOp::Add, pos.line),
-            Symbol::Minus => chunk.emit_binary_op(BinaryOp::Subtract, pos.line),
-            Symbol::Star => chunk.emit_binary_op(BinaryOp::Multiply, pos.line),
-            Symbol::Slash => chunk.emit_binary_op(BinaryOp::Divide, pos.line),
-            Symbol::EqualEqual => chunk.emit_binary_op(BinaryOp::Equal, pos.line),
-            Symbol::BangEqual => {
-                chunk.emit_binary_op(BinaryOp::Equal, pos.line);
-                chunk.emit_negate(pos.line);
-            }
-            Symbol::Greater => chunk.emit_binary_op(BinaryOp::Greater, pos.line),
-            Symbol::GreaterEqual => {
-                chunk.emit_binary_op(BinaryOp::Less, pos.line);
-                chunk.emit_not(pos.line);
-            }
-            Symbol::Less => chunk.emit_binary_op(BinaryOp::Less, pos.line),
-            Symbol::LessEqual => {
-                chunk.emit_binary_op(BinaryOp::Greater, pos.line);
-                chunk.emit_not(pos.line);
-            }
-            s => panic!("not a binary op: {}", s),
-        },
-        TokenType::Keyword(key) => panic!("not a binary op: {}", key),
-        t => panic!("not a binary op: {:?}", t),
     }
 }

@@ -1,19 +1,7 @@
-if (true) {
-    print "wee!";
-} else {
-    print "boo!";
-}
+print "start";
 
-if (false) {
-    print "boo!";
-} else {
+if (false or true) {
     print "wee!";
 }
 
-if (false) {
-    print "boo!";
-} else if (true) {
-    print "wee!";
-} else {
-    print "boo!";
-}
+print "end!";
