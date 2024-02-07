@@ -300,7 +300,10 @@ where
             }
             result
         }
-        _ => expr_statement(error, compile_state, chunk, scanner, heap),
+        t => {
+            println!("hit token: {:?}", t);
+            expr_statement(error, compile_state, chunk, scanner, heap)
+        }
     }
 }
 
@@ -380,7 +383,8 @@ where
     }
     chunk.emit_pop(pos.line);
     // There's always a pop that we shouldn't jump over
-    if let Ok(Token(TokenType::Keyword(Keyword::Else), pos)) = scanner.next() {
+    if let Ok(Token(TokenType::Keyword(Keyword::Else), _)) = scanner.peek() {
+        scanner.eat();
         statement(error, compile_state, chunk, scanner, heap)?;
     }
     if !chunk.patch_jump(skip_else_jump) {

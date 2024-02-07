@@ -1,7 +1,5 @@
-print "start";
-
-if (false or true) {
-    print "wee!";
+if (false and true) {
+    print "failed!";
+} else if (true and true) {
+    print "succeeded!";
 }
-
-print "end!";
