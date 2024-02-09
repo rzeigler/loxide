@@ -291,6 +291,9 @@ where
         Token(TokenType::Keyword(Keyword::If), _) => {
             if_statement(error, compile_state, chunk, scanner, heap)
         }
+        Token(TokenType::Keyword(Keyword::While), _) => {
+            while_statement(error, compile_state, chunk, scanner, heap)
+        }
         Token(TokenType::Symbol(Symbol::LeftBrace), pos) => {
             compile_state.begin_scope();
             let result = block(error, compile_state, chunk, scanner, heap);
@@ -390,6 +393,40 @@ where
     if !chunk.patch_jump(skip_else_jump) {
         return error.report(pos, "branch jumps to far");
     }
+
+    Ok(())
+}
+
+fn while_statement<R>(
+    error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let pos = if let Ok(Token(TokenType::Keyword(Keyword::While), pos)) = scanner.next() {
+        pos
+    } else {
+        // Already tested this above
+        unreachable!()
+    };
+
+    expect_next_token(error, TokenType::Symbol(Symbol::LeftParen), scanner)?;
+    expr(error, compile_state, chunk, scanner, heap)?;
+    expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
+
+    // TODO: The looping
+    let exit_jump = chunk.emit_jump_if_false(pos.line);
+    chunk.emit_pop(pos.line);
+    statement(error, compile_state, chunk, scanner, heap)?;
+
+    if !chunk.patch_jump(exit_jump) {
+        return error.report(pos, "cannot jump the far");
+    }
+    chunk.emit_pop(pos.line);
 
     Ok(())
 }
