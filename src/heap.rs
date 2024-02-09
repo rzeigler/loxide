@@ -21,7 +21,6 @@ impl Object {
     pub fn string_slice(&self) -> &'static [u8] {
         match self {
             Object::String(s) => s,
-            _ => panic!("not a string"),
         }
     }
 }

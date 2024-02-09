@@ -25,6 +25,7 @@ pub enum OpCode {
     SetLocal,
     JumpIfFalse,
     Jump,
+    Loop,
     Return, // Return goes last as the sentinel for maximum opcode
 }
 
@@ -76,6 +77,10 @@ impl Chunk {
             constants: Vec::new(),
             lines: Vec::new(),
         }
+    }
+
+    pub fn current_marker(&self) -> usize {
+        self.code.len()
     }
 
     pub fn code(&self) -> &[u8] {
@@ -221,6 +226,27 @@ impl Chunk {
         }
     }
 
+    #[must_use]
+    pub fn emit_loop(&mut self, loop_start: usize, line: usize) -> bool {
+        let distance = self.code.len() - loop_start + 2;
+        self.lines.push(line);
+
+        if distance > u16::MAX.into() {
+            false
+        } else {
+            self.code.push(OpCode::Loop as u8);
+            let high_byte = (distance >> 8) as u8;
+            let low_byte = distance as u8;
+
+            self.code.push(high_byte);
+            self.code.push(low_byte);
+
+            self.lines.push(line);
+            self.lines.push(line);
+            true
+        }
+    }
+
     pub fn add_constant(&mut self, constant: Value) -> u8 {
         if self.constants.len() == u8::MAX.into() {
             panic!("constant pool exhausted");
@@ -266,6 +292,7 @@ impl Chunk {
                 OpCode::SetLocal | OpCode::GetLocal => self.local_inst(result, offset),
                 OpCode::Constant => self.constant_inst(result, offset),
                 OpCode::JumpIfFalse | OpCode::Jump => self.jump_inst(result, 1, offset),
+                OpCode::Loop => self.jump_inst(result, -1, offset),
                 OpCode::Return => self.zero_arg_inst(offset),
             }
         } else {
@@ -289,15 +316,16 @@ impl Chunk {
         offset + 2
     }
 
-    fn jump_inst(&self, target: &mut String, sign: u8, offset: usize) -> usize {
+    fn jump_inst(&self, target: &mut String, sign: i8, offset: usize) -> usize {
         let high_byte = self.code[offset + 1];
         let low_byte = self.code[offset + 2];
         let jump_len = ((high_byte as u16) << 8) | low_byte as u16;
-        target.push_str(&format!(
-            "{} -> {} ",
-            offset,
-            offset + 3 + usize::from(sign) * usize::from(jump_len)
-        ));
+        let position = if sign > 0 {
+            offset + 3 + usize::from(jump_len)
+        } else {
+            offset + 3 - usize::from(jump_len)
+        };
+        target.push_str(&format!("{} -> {} ", offset, position));
         offset + 3
     }
 

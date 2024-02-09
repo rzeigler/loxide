@@ -223,11 +223,11 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     stack.push(Value::Bool(!v))?;
                 }
                 OpCode::Equal => {
-                    let (l, r) = self.pop_binary_operands(stack)?;
+                    let (r, l) = self.pop_binary_operands(stack)?;
                     stack.push(Value::Bool(l == r))?;
                 }
                 OpCode::Greater => {
-                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                    if let (Value::Number(r), Value::Number(l)) = self.pop_binary_operands(stack)? {
                         stack.push(Value::Bool(l > r))?;
                     } else {
                         return Err(raise_error(
@@ -238,7 +238,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     }
                 }
                 OpCode::Less => {
-                    if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
+                    if let (Value::Number(r), Value::Number(l)) = self.pop_binary_operands(stack)? {
                         stack.push(Value::Bool(l > r))?;
                     } else {
                         return Err(raise_error(
@@ -274,7 +274,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 }
                 OpCode::SetGlobal => {
                     let global_slot = self.read_stack_slot(chunk, ip)?;
-                    let value = stack.pop()?;
+                    let value = stack.peek()?;
                     self.globals[global_slot] = value;
                 }
                 OpCode::GetLocal => {
@@ -284,7 +284,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 }
                 OpCode::SetLocal => {
                     let stack_slot = self.read_stack_slot(chunk, ip)?;
-                    let value = stack.pop()?;
+                    let value = stack.peek()?;
                     stack.stack[stack_slot].write(value);
                 }
                 OpCode::JumpIfFalse => {
@@ -296,7 +296,11 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 }
                 OpCode::Jump => {
                     let jump_len = self.read_jump_len(chunk, ip)?;
-                    *ip += jump_len
+                    *ip += jump_len;
+                }
+                OpCode::Loop => {
+                    let jump_len = self.read_jump_len(chunk, ip)?;
+                    *ip -= jump_len;
                 }
             }
         }
@@ -357,17 +361,4 @@ fn read_constant(chunk: &Chunk, offset: u8) -> Result<Value> {
         .get(usize::from(offset))
         .context("out of bound constant access")
         .cloned()
-}
-
-// Used during variable definition when we know the structure
-fn value_to_string(v: Value) -> Option<String> {
-    if let Value::Object(obj_ptr) = v {
-        unsafe {
-            match &*obj_ptr {
-                Object::String(bs) => Some(std::str::from_utf8_unchecked(bs).to_string()),
-            }
-        }
-    } else {
-        None
-    }
 }

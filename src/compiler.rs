@@ -3,7 +3,7 @@ use anyhow::{anyhow, bail, Result};
 use crate::{
     bytecode::BinaryOp,
     heap::{Heap, Value},
-    reporter::{self, Reporter},
+    reporter::Reporter,
     scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
 
@@ -303,10 +303,7 @@ where
             }
             result
         }
-        t => {
-            println!("hit token: {:?}", t);
-            expr_statement(error, compile_state, chunk, scanner, heap)
-        }
+        t => expr_statement(error, compile_state, chunk, scanner, heap),
     }
 }
 
@@ -414,6 +411,7 @@ where
         unreachable!()
     };
 
+    let loop_start = chunk.current_marker();
     expect_next_token(error, TokenType::Symbol(Symbol::LeftParen), scanner)?;
     expr(error, compile_state, chunk, scanner, heap)?;
     expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
@@ -421,10 +419,15 @@ where
     // TODO: The looping
     let exit_jump = chunk.emit_jump_if_false(pos.line);
     chunk.emit_pop(pos.line);
+
     statement(error, compile_state, chunk, scanner, heap)?;
 
+    if !chunk.emit_loop(loop_start, pos.line) {
+        return error.report(pos, "cannot jump that far");
+    }
+
     if !chunk.patch_jump(exit_jump) {
-        return error.report(pos, "cannot jump the far");
+        return error.report(pos, "cannot jump that far");
     }
     chunk.emit_pop(pos.line);
 
