@@ -11,11 +11,28 @@ use crate::bytecode::Chunk;
 #[repr(C, u8)]
 pub enum Object {
     String(Rc<String>), // Pretend static
-    Function {
-        name: Rc<String>,
-        arity: u8,
-        chunk: Chunk,
-    },
+    Function(Function),
+}
+
+#[derive(Debug, Clone)]
+pub struct Function {
+    pub name: Rc<String>,
+    pub arity: u8,
+    pub chunk: Chunk,
+}
+
+impl Function {
+    pub fn new_script() -> Function {
+        Function {
+            name: Rc::new("<script>".to_string()),
+            arity: 0,
+            chunk: Chunk::new(),
+        }
+    }
+
+    pub fn disassemble(&self) {
+        self.chunk.disassemble(&self.name);
+    }
 }
 
 impl Object {
@@ -60,11 +77,11 @@ impl Value {
                 match obj {
                     // Already a string
                     Object::String(str) => Object::String(str.clone()),
-                    Object::Function {
+                    Object::Function(Function {
                         name,
                         arity: _,
                         chunk: _,
-                    } => Object::String(name.clone()),
+                    }) => Object::String(name.clone()),
                 }
             },
             Value::Nil => Object::String(Rc::new("nil".to_owned())),
@@ -104,21 +121,21 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::Nil => f.write_str("nil"),
             Value::Number(n) => write!(f, "{}", n),
-            Value::Object(obj) => unsafe {
+            Value::Object(obj) => {
                 match obj {
                     Object::String(string) => {
                         // We don't allow construct non-utf8 string representations
                         write!(f, "\"{}\"", string)
                     }
-                    Object::Function {
+                    Object::Function(Function {
                         name,
                         arity: _,
                         chunk: _,
-                    } => {
+                    }) => {
                         write!(f, "<fn {}>", name)
                     }
                 }
-            },
+            }
         }
     }
 }

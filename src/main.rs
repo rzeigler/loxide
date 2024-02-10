@@ -47,9 +47,9 @@ fn run<const DEBUG: bool>(path: &str) -> Result<()> {
     let mut reporter = WriteReporter::new(stderr().lock());
 
     match compile(&data, &mut reporter, &mut heap) {
-        Ok(chunk) => {
-            chunk.disassemble(path);
-            if let Err(e) = vm.interpret(&chunk) {
+        Ok(function) => {
+            function.disassemble();
+            if let Err(e) = vm.interpret(function) {
                 eprintln!("{}", e);
             }
         }
@@ -82,9 +82,9 @@ fn run_prompt<const DEBUG: bool>() -> Result<()> {
 
         let mut reporter = WriteReporter::new(stderr().lock());
         match compile(&line, &mut reporter, &mut heap) {
-            Ok(chunk) => {
-                chunk.disassemble("prompt line");
-                if let Err(e) = vm.interpret(&chunk) {
+            Ok(function) => {
+                function.chunk.disassemble(&function.name);
+                if let Err(e) = vm.interpret(function) {
                     eprintln!("{}", e);
                 }
             }
