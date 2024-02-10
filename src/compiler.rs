@@ -1,8 +1,10 @@
+use std::rc::Rc;
+
 use anyhow::{anyhow, bail, Result};
 
 use crate::{
     bytecode::BinaryOp,
-    heap::{Heap, Value},
+    heap::{Heap, Object, Value},
     reporter::Reporter,
     scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
@@ -306,7 +308,7 @@ where
             }
             result
         }
-        t => expr_statement(error, compile_state, chunk, scanner, heap),
+        _ => expr_statement(error, compile_state, chunk, scanner, heap),
     }
 }
 
@@ -613,8 +615,10 @@ where
             }
         }
         Token(TokenType::String(string), pos) => {
-            let str_obj = heap.alloc_string_in_heap(string);
-            chunk.emit_constant(Value::Object(str_obj), pos.line);
+            chunk.emit_constant(
+                Value::Object(Object::String(Rc::new(string.to_owned()))),
+                pos.line,
+            );
         }
         _ => todo!(),
     };

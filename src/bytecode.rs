@@ -1,5 +1,3 @@
-use std::ops::{AddAssign, Deref};
-
 use crate::heap::Value;
 
 #[derive(Debug)]
@@ -66,6 +64,7 @@ pub enum BinaryOp {
     Less,
 }
 
+#[derive(Debug, Clone)]
 pub struct Chunk {
     code: Vec<u8>,
     constants: Vec<Value>,

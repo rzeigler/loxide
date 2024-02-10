@@ -1,5 +1,5 @@
 use core::slice;
-use std::{fmt::Debug, mem::MaybeUninit};
+use std::{fmt::Debug, mem::MaybeUninit, rc::Rc};
 
 use anyhow::{anyhow, bail, Context, Result};
 
@@ -9,45 +9,34 @@ use crate::{
 };
 
 pub struct Stack<const LIMIT: usize = 256> {
-    stack: [MaybeUninit<Value>; LIMIT],
-    top: usize,
+    stack: Vec<Value>,
 }
 
 impl<const LIMIT: usize> Stack<LIMIT> {
     pub fn new() -> Stack<LIMIT> {
         Stack {
-            stack: [MaybeUninit::uninit(); LIMIT],
-            top: 0,
+            stack: Vec::with_capacity(LIMIT),
         }
     }
 
     pub fn push(&mut self, v: Value) -> Result<()> {
-        if self.top == LIMIT {
+        if self.stack.len() == LIMIT {
             bail!("stack limit exceeded");
         } else {
-            self.stack[self.top].write(v);
-            self.top += 1;
+            self.stack.push(v);
             Ok(())
         }
     }
 
     pub fn pop(&mut self) -> Result<Value> {
-        if self.top == 0 {
-            bail!("stack empty");
-        } else {
-            let v = unsafe { self.stack[self.top - 1].assume_init() };
-            self.top -= 1;
-            Ok(v)
-        }
+        self.stack.pop().ok_or_else(|| anyhow!("stack is empty"))
     }
 
     pub fn peek(&self) -> Result<Value> {
-        if self.top == 0 {
-            bail!("stack empty");
-        } else {
-            let v = unsafe { self.stack[self.top - 1].assume_init() };
-            Ok(v)
-        }
+        self.stack
+            .last()
+            .ok_or_else(|| anyhow!("stack is empty"))
+            .cloned()
     }
 }
 
@@ -55,8 +44,8 @@ impl<const LIMIT: usize> Debug for Stack<LIMIT> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut list = f.debug_list();
 
-        for i in 0..self.top {
-            list.entry(unsafe { &self.stack[i].assume_init() });
+        for v in self.stack.iter() {
+            list.entry(v);
         }
 
         list.finish()
@@ -155,7 +144,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         stack.push(Value::Number(l + r))?;
                     }
                     (Value::Object(l), Value::Object(r)) => unsafe {
-                        if (&*l).is_string() || (&*r).is_string() {
+                        if l.is_string() || r.is_string() {
                             stack.push(self.concat_strings(Value::Object(l), Value::Object(r)))?;
                         } else {
                             return Err(raise_error(
@@ -269,7 +258,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 }
                 OpCode::GetGlobal => {
                     let global_slot = self.read_stack_slot(chunk, ip)?;
-                    let value = self.globals[global_slot];
+                    let value = self.globals[global_slot].clone();
                     stack.push(value)?;
                 }
                 OpCode::SetGlobal => {
@@ -279,13 +268,13 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 }
                 OpCode::GetLocal => {
                     let stack_slot = self.read_stack_slot(chunk, ip)?;
-                    let value = unsafe { stack.stack[stack_slot].assume_init() };
+                    let value = stack.stack[stack_slot].clone();
                     stack.push(value)?;
                 }
                 OpCode::SetLocal => {
                     let stack_slot = self.read_stack_slot(chunk, ip)?;
                     let value = stack.peek()?;
-                    stack.stack[stack_slot].write(value);
+                    stack.stack[stack_slot] = value;
                 }
                 OpCode::JumpIfFalse => {
                     let jump_len = self.read_jump_len(chunk, ip)?;
@@ -319,27 +308,11 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
     // Assumes that at least 1 of the Values is a string
     fn concat_strings(&self, left: Value, right: Value) -> Value {
         // One of them should be a string but allocate a string out of the other
-        let left_str = left.create_string(&self.heap);
-        let right_str = right.create_string(&self.heap);
-        unsafe {
-            let left_slice = (&*left_str).string_slice();
-            let right_slice = (&*right_str).string_slice();
-
-            let len = left_slice.len() + right_slice.len();
-            let buf_ptr = self.heap.alloc_string_buf(len);
-
-            let slice = slice::from_raw_parts_mut(buf_ptr, len);
-
-            slice[..left_slice.len()].copy_from_slice(left_slice);
-            slice[left_slice.len()..].copy_from_slice(right_slice);
-
-            // Recreate an immutable slice
-            let slice: &'static [u8] = std::mem::transmute(slice);
-
-            let obj_ptr = self.heap.alloc_object();
-            obj_ptr.write(Object::String(slice));
-            Value::Object(obj_ptr)
-        }
+        let left_str = left.create_string();
+        let right_str = right.create_string();
+        let mut result = left_str.string_slice().to_owned();
+        result.push_str(right_str.string_slice());
+        Value::Object(Object::String(Rc::new(result)))
     }
 }
 
