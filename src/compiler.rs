@@ -294,6 +294,9 @@ where
         Token(TokenType::Keyword(Keyword::While), _) => {
             while_statement(error, compile_state, chunk, scanner, heap)
         }
+        Token(TokenType::Keyword(Keyword::For), _) => {
+            for_statement(error, compile_state, chunk, scanner, heap)
+        }
         Token(TokenType::Symbol(Symbol::LeftBrace), pos) => {
             compile_state.begin_scope();
             let result = block(error, compile_state, chunk, scanner, heap);
@@ -430,6 +433,84 @@ where
         return error.report(pos, "cannot jump that far");
     }
     chunk.emit_pop(pos.line);
+
+    Ok(())
+}
+
+fn for_statement<R>(
+    error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
+    chunk: &mut Chunk,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let pos = if let Ok(Token(TokenType::Keyword(Keyword::For), pos)) = scanner.next() {
+        pos
+    } else {
+        // Already tested this above
+        unreachable!()
+    };
+
+    compile_state.begin_scope();
+
+    expect_next_token(error, TokenType::Symbol(Symbol::LeftParen), scanner)?;
+
+    // Both of these will consume the semi-colon
+    if peek_next_token(TokenType::Keyword(Keyword::Var), scanner) {
+        scanner.eat();
+        var_declaration(error, compile_state, chunk, scanner, heap)?
+    } else if !peek_next_token(TokenType::Symbol(Symbol::Semicolon), scanner) {
+        expr_statement(error, compile_state, chunk, scanner, heap)?;
+    }
+
+    let mut loop_start = chunk.current_marker();
+
+    // There is no condition, so true...
+    if peek_next_token(TokenType::Symbol(Symbol::Semicolon), scanner) {
+        chunk.emit_bool(true, pos.line);
+    } else {
+        expr(error, compile_state, chunk, scanner, heap)?;
+    };
+    let exit_jump = chunk.emit_jump_if_false(pos.line);
+    chunk.emit_pop(pos.line);
+
+    expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
+
+    // Do the cross jump dance to enable single pass
+    if !peek_next_token(TokenType::Symbol(Symbol::RightParen), scanner) {
+        // TODO: This is the wrong line...
+        let body_jump = chunk.emit_jump(pos.line);
+        let incr_start = chunk.current_marker();
+
+        expr(error, compile_state, chunk, scanner, heap)?;
+        chunk.emit_pop(pos.line);
+
+        if !chunk.emit_loop(loop_start, pos.line) {
+            return error.report(pos, "cannot jump that far");
+        }
+        loop_start = incr_start;
+        if !chunk.patch_jump(body_jump) {
+            return error.report(pos, "cannot jump that far");
+        }
+    }
+
+    expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
+
+    statement(error, compile_state, chunk, scanner, heap)?;
+
+    if !chunk.emit_loop(loop_start, pos.line) {
+        return error.report(pos, "cannot jump that far");
+    }
+
+    if !chunk.patch_jump(exit_jump) {
+        return error.report(pos, "cannot jump that far");
+    }
+    chunk.emit_pop(pos.line);
+
+    compile_state.end_scope();
 
     Ok(())
 }
@@ -668,6 +749,14 @@ where
         Err(e) => error.report(e.pos, "unrecognized token"),
         Ok(Token(next, _)) if token == next => Ok(()),
         Ok(Token(_, pos)) => error.report(pos, &format!("expected {:?}", token)),
+    }
+}
+
+fn peek_next_token(token: TokenType, scanner: &Scanner) -> bool {
+    if let Ok(Token(ttype, _)) = scanner.peek() {
+        ttype == token
+    } else {
+        false
     }
 }
 

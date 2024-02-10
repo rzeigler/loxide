@@ -1,3 +1,5 @@
+use std::ops::{AddAssign, Deref};
+
 use crate::heap::Value;
 
 #[derive(Debug)]
@@ -228,13 +230,13 @@ impl Chunk {
 
     #[must_use]
     pub fn emit_loop(&mut self, loop_start: usize, line: usize) -> bool {
-        let distance = self.code.len() - loop_start + 2;
+        self.code.push(OpCode::Loop as u8);
         self.lines.push(line);
 
+        let distance = self.code.len() - loop_start + 2;
         if distance > u16::MAX.into() {
             false
         } else {
-            self.code.push(OpCode::Loop as u8);
             let high_byte = (distance >> 8) as u8;
             let low_byte = distance as u8;
 
