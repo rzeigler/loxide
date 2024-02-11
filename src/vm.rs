@@ -85,16 +85,25 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
     }
 
     pub fn interpret(&mut self, function: Function) -> Result<()> {
+        let init_fn = Rc::new(function);
+
         // Diverging from the book because I'm not going to attempt to juggle pointers
         const FRAMES_MAX: usize = 64;
         const STACK_MAX: usize = FRAMES_MAX * 256;
 
         let mut stack: Stack<Value, STACK_MAX> = Stack::new();
+        // per http://craftinginterpreters.com/calls-and-functions.html#creating-functions-at-compile-time
+        // push a dummy value to align for intermediate testing
+        // I'm assuming this is the ret slot
+        stack
+            .push(Value::Object(Object::Function(init_fn.clone())))
+            .unwrap();
+
         let mut frames: Stack<CallFrame, FRAMES_MAX> = Stack::new();
 
         frames
             .push(CallFrame {
-                function: Rc::new(function),
+                function: init_fn,
                 ip: 0,
                 stack_slot_start: 0,
             })

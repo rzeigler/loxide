@@ -3,7 +3,7 @@ use std::rc::Rc;
 use anyhow::{anyhow, bail, Result};
 
 use crate::{
-    bytecode::BinaryOp,
+    bytecode::{BinaryOp, Chunk},
     heap::{Function, Heap, Object, Value},
     reporter::Reporter,
     scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
@@ -72,16 +72,35 @@ impl CompileState {
     fn new() -> CompileState {
         let mut locals = Vec::new();
         // http://craftinginterpreters.com/calls-and-functions.html#creating-functions-at-compile-time
-        // locals.push(Local {
-        //     name: "".to_owned(),
-        //     depth: 0,
-        // });
+        locals.push(Local {
+            name: "".to_owned(),
+            depth: 0,
+        });
         CompileState {
             globals: Vec::new(),
             locals: locals,
             scope_depth: 0,
             function: Function::new_script(),
         }
+    }
+
+    fn new_fun(name: &str) -> CompileState {
+        let mut locals = Vec::new();
+        // http://craftinginterpreters.com/calls-and-functions.html#creating-functions-at-compile-time
+        locals.push(Local {
+            name: name.to_owned(),
+            depth: 0,
+        });
+        CompileState {
+            globals: Vec::new(),
+            locals: locals,
+            scope_depth: 0,
+            function: Function::new(name),
+        }
+    }
+
+    fn chunk_mut(&mut self) -> &mut Chunk {
+        &mut self.function.chunk
     }
 
     fn begin_scope(&mut self) {
@@ -134,19 +153,22 @@ impl CompileState {
             .map(|(i, _)| i)
     }
 
-    fn define_global(&mut self, var: &str) -> usize {
+    fn define_global(&mut self, var: &str) -> Option<u8> {
         if self.resolve_global(var).is_none() {
+            if self.globals.len() == u8::MAX.into() {
+                return None;
+            }
             self.globals.push(var.to_string());
         }
-        self.resolve_global(var).unwrap()
+        self.resolve_global(var)
     }
 
-    fn resolve_global(&self, name: &str) -> Option<usize> {
+    fn resolve_global(&self, name: &str) -> Option<u8> {
         self.globals
             .iter()
             .enumerate()
             .find(|(_, global)| *global == name)
-            .map(|(i, _)| i)
+            .map(|(i, _)| i.try_into().unwrap())
     }
 }
 
@@ -185,13 +207,12 @@ fn declaration<R>(
 ) where
     R: Reporter,
 {
-    let result = if scanner
-        .peek()
-        .map(|token| token.0 == Keyword::Var)
-        .unwrap_or(false)
-    {
+    let result = if peek_next_token(TokenType::Keyword(Keyword::Var), scanner) {
         scanner.eat();
         var_declaration(error, compile_state, scanner, heap)
+    } else if peek_next_token(TokenType::Keyword(Keyword::Fun), scanner) {
+        scanner.eat();
+        fun_declaration(error, compile_state, scanner, heap)
     } else {
         statement(error, compile_state, scanner, heap)
     };
@@ -243,11 +264,8 @@ fn var_declaration<R>(
 where
     R: Reporter,
 {
-    let (identifier, pos) = match scanner.next() {
-        Ok(Token(TokenType::Identifier(ident), pos)) => (ident, pos),
-        Ok(Token(_, pos)) => return error.report(pos, "expected identifier"),
-        Err(err) => return error.report(err.pos, "unrecognized token"),
-    };
+    let (identifier, pos) = expect_next_identifier(error, scanner)?;
+    let identifier = identifier.to_string();
 
     if let Token(TokenType::Symbol(Symbol::Equal), _) = adapt_scanner_error(scanner.peek(), error)?
     {
@@ -260,19 +278,101 @@ where
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
 
     if compile_state.scope_depth == 0 {
-        let global_slot = u8::try_from(compile_state.define_global(identifier)).or_else(|_| {
-            error
-                .report(pos, "too many globals")
-                .map(|_| unreachable!())
-        })?;
-        compile_state
-            .function
-            .chunk
-            .emit_define_global(global_slot, pos.line);
+        if let Some(global_slot) = compile_state.define_global(&identifier) {
+            compile_state
+                .chunk_mut()
+                .emit_define_global(global_slot, pos.line);
+        } else {
+            // No need to panic
+            _ = error.report(pos, "too many globals")
+        }
         Ok(())
     } else {
         compile_state.define_local(identifier.to_string(), pos, error)
     }
+}
+
+fn fun_declaration<R>(
+    error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let (identifier, pos) = expect_next_identifier(error, scanner)?;
+    let identifier = identifier.to_owned();
+    let global = compile_state.define_global(&identifier);
+
+    function(
+        error,
+        compile_state,
+        scanner,
+        heap,
+        &identifier,
+        pos.clone(),
+        false,
+    )?;
+
+    if let Some(global) = global {
+        compile_state
+            .chunk_mut()
+            .emit_define_global(global, pos.line);
+    } else {
+        // No need to panic
+        _ = error.report(pos, "too many globals");
+    }
+
+    Ok(())
+}
+
+fn function<R>(
+    error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+    name: &str,
+    pos: Pos,
+    is_method: bool,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let mut inner_state = CompileState::new_fun(name);
+    inner_state.begin_scope();
+
+    expect_next_token(error, TokenType::Symbol(Symbol::LeftParen), scanner)?;
+
+    if !peek_next_token(TokenType::Symbol(Symbol::RightParen), scanner) {
+        loop {
+            if inner_state.function.arity == u8::MAX {
+                _ = error.report(pos, "cannot have more than 255 parameters")
+            } else {
+                inner_state.function.arity += 1;
+            }
+            let (ident, pos) = expect_next_identifier(error, scanner)?;
+            _ = inner_state.define_local(ident.to_string(), pos, error);
+            if peek_next_token(TokenType::Symbol(Symbol::Comma), scanner) {
+                scanner.eat();
+            } else {
+                break;
+            }
+        }
+    }
+
+    expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
+    expect_next_token(error, TokenType::Symbol(Symbol::LeftBrace), scanner)?;
+    block(error, &mut inner_state, scanner, heap)?;
+
+    inner_state.end_scope();
+
+    compile_state.chunk_mut().emit_constant(
+        Value::Object(Object::Function(Rc::new(inner_state.function))),
+        pos.line,
+    );
+
+    Ok(())
 }
 
 fn statement<R>(
@@ -298,6 +398,7 @@ where
             for_statement(error, compile_state, scanner, heap)
         }
         Token(TokenType::Symbol(Symbol::LeftBrace), pos) => {
+            scanner.eat(); // consume {
             compile_state.begin_scope();
             let result = block(error, compile_state, scanner, heap);
             let pops = compile_state.end_scope();
@@ -319,8 +420,6 @@ fn block<R>(
 where
     R: Reporter,
 {
-    scanner.eat(); // eat the {
-
     while !scanner.at_eof()
         && !scanner
             .peek()
@@ -570,8 +669,7 @@ where
             }
         }
         Token(TokenType::Number(num), pos) => compile_state
-            .function
-            .chunk
+            .chunk_mut()
             .emit_constant(num.into(), pos.line),
         Token(TokenType::Keyword(Keyword::True), pos) => {
             compile_state.function.chunk.emit_bool(true, pos.line)
@@ -595,13 +693,11 @@ where
                 // Try and resolve a local first, if its not, then I guess we are going with global
                 if let Some(local_slot) = compile_state.resolve_local(identifier) {
                     compile_state
-                        .function
-                        .chunk
+                        .chunk_mut()
                         .emit_set_local(local_slot.try_into().unwrap(), pos.line);
                 } else if let Some(global_slot) = compile_state.resolve_global(identifier) {
                     compile_state
-                        .function
-                        .chunk
+                        .chunk_mut()
                         .emit_set_global(global_slot.try_into().unwrap(), pos.line);
                 } else {
                     _ = error.report(
@@ -612,13 +708,11 @@ where
             } else {
                 if let Some(local_slot) = compile_state.resolve_local(identifier) {
                     compile_state
-                        .function
-                        .chunk
+                        .chunk_mut()
                         .emit_get_local(local_slot.try_into().unwrap(), pos.line);
                 } else if let Some(global_slot) = compile_state.resolve_global(identifier) {
                     compile_state
-                        .function
-                        .chunk
+                        .chunk_mut()
                         .emit_get_global(global_slot.try_into().unwrap(), pos.line);
                 } else {
                     _ = error.report(pos, &format!("unknown variable for access: {}", identifier))
@@ -647,73 +741,63 @@ where
                         Symbol::Plus => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Add, pos.line);
                         }
                         Symbol::Minus => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Subtract, pos.line)
                         }
                         Symbol::Star => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Multiply, pos.line)
                         }
                         Symbol::Slash => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Divide, pos.line)
                         }
                         Symbol::EqualEqual => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Equal, pos.line)
                         }
                         Symbol::BangEqual => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Equal, pos.line);
                             compile_state.function.chunk.emit_negate(pos.line);
                         }
                         Symbol::Greater => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Greater, pos.line)
                         }
                         Symbol::GreaterEqual => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Less, pos.line);
                             compile_state.function.chunk.emit_not(pos.line);
                         }
                         Symbol::Less => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Less, pos.line)
                         }
                         Symbol::LessEqual => {
                             expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
                             compile_state
-                                .function
-                                .chunk
+                                .chunk_mut()
                                 .emit_binary_op(BinaryOp::Greater, pos.line);
                             compile_state.function.chunk.emit_not(pos.line);
                         }
@@ -804,6 +888,24 @@ fn peek_next_token(token: TokenType, scanner: &Scanner) -> bool {
         ttype == token
     } else {
         false
+    }
+}
+
+fn expect_next_identifier<'s, R>(
+    error: &mut ErrorHandler<R>,
+    scanner: &'s mut Scanner,
+) -> Result<(&'s str, Pos), CompilePanic>
+where
+    R: Reporter,
+{
+    match scanner.next() {
+        Ok(Token(TokenType::Identifier(ident), pos)) => Ok((ident, pos)),
+        Ok(Token(_, pos)) => error
+            .report(pos, "expected identifier")
+            .map(|_| unreachable!()),
+        Err(err) => error
+            .report(err.pos, "unrecognized token")
+            .map(|_| unreachable!()),
     }
 }
 

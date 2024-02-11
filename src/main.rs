@@ -17,7 +17,6 @@ use std::io::BufReader;
 use anyhow::bail;
 use anyhow::{Context, Result};
 
-use bytecode::Chunk;
 use compiler::compile;
 use heap::Heap;
 use reporter::WriteReporter;
