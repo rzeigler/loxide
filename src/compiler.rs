@@ -4,9 +4,9 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{
     bytecode::{BinaryOp, Chunk},
-    heap::{Function, FunctionType, Heap, Object, Value},
-    reporter::{self, Reporter},
+    reporter::Reporter,
     scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
+    value::{Function, FunctionType, Object, Value},
 };
 
 pub struct ErrorHandler<'r, R> {
@@ -36,7 +36,7 @@ where
     }
 }
 
-pub fn compile<'heap, R>(source: &str, reporter: &mut R, heap: &'heap mut Heap) -> Result<Function>
+pub fn compile<'heap, R>(source: &str, reporter: &mut R) -> Result<Function>
 where
     R: Reporter,
 {
@@ -44,7 +44,7 @@ where
     let mut error = ErrorHandler::new(reporter);
     let mut compile_state = CompileState::new();
 
-    if let Err(_) = compile_stream(&mut error, &mut compile_state, &mut scanner, heap) {
+    if let Err(_) = compile_stream(&mut error, &mut compile_state, &mut scanner) {
         bail!("compiler error");
     }
 
@@ -169,13 +169,12 @@ fn compile_stream<'heap, R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &'heap mut Heap,
 ) -> Result<()>
 where
     R: Reporter,
 {
     while !scanner.at_eof() {
-        declaration(error, compile_state, scanner, heap);
+        declaration(error, compile_state, scanner);
     }
 
     if error.has_errored {
@@ -191,18 +190,17 @@ fn declaration<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) where
     R: Reporter,
 {
     let result = if peek_next_token(TokenType::Keyword(Keyword::Var), scanner) {
         scanner.eat();
-        var_declaration(error, compile_state, scanner, heap)
+        var_declaration(error, compile_state, scanner)
     } else if peek_next_token(TokenType::Keyword(Keyword::Fun), scanner) {
         scanner.eat();
-        fun_declaration(error, compile_state, scanner, heap)
+        fun_declaration(error, compile_state, scanner)
     } else {
-        statement(error, compile_state, scanner, heap)
+        statement(error, compile_state, scanner)
     };
 
     match result {
@@ -247,7 +245,6 @@ fn var_declaration<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
@@ -258,7 +255,7 @@ where
     if let Token(TokenType::Symbol(Symbol::Equal), _) = adapt_scanner_error(scanner.peek(), error)?
     {
         scanner.eat();
-        expr(error, compile_state, scanner, heap)?;
+        expr(error, compile_state, scanner)?;
     } else {
         compile_state.function.chunk.emit_nil(pos.line);
     }
@@ -283,20 +280,18 @@ fn fun_declaration<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
 {
     let (identifier, pos) = expect_next_identifier(error, scanner)?;
     let identifier = identifier.to_owned();
-    let global = compile_state.define_global(&identifier);
+    compile_state.define_global(&identifier);
 
     function(
         error,
         compile_state,
         scanner,
-        heap,
         &identifier,
         pos.clone(),
         false,
@@ -321,7 +316,6 @@ fn function<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
     name: &str,
     pos: Pos,
     is_method: bool,
@@ -353,7 +347,7 @@ where
 
     expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
     expect_next_token(error, TokenType::Symbol(Symbol::LeftBrace), scanner)?;
-    block(error, &mut inner_state, scanner, heap)?;
+    block(error, &mut inner_state, scanner)?;
 
     inner_state.end_scope();
     // Default return
@@ -372,28 +366,23 @@ fn statement<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
 {
     match adapt_scanner_error(scanner.peek(), error)? {
         Token(TokenType::Keyword(Keyword::Print), _) => {
-            print_statement(error, compile_state, scanner, heap)
+            print_statement(error, compile_state, scanner)
         }
-        Token(TokenType::Keyword(Keyword::If), _) => {
-            if_statement(error, compile_state, scanner, heap)
-        }
+        Token(TokenType::Keyword(Keyword::If), _) => if_statement(error, compile_state, scanner),
         Token(TokenType::Keyword(Keyword::While), _) => {
-            while_statement(error, compile_state, scanner, heap)
+            while_statement(error, compile_state, scanner)
         }
-        Token(TokenType::Keyword(Keyword::For), _) => {
-            for_statement(error, compile_state, scanner, heap)
-        }
+        Token(TokenType::Keyword(Keyword::For), _) => for_statement(error, compile_state, scanner),
         Token(TokenType::Symbol(Symbol::LeftBrace), pos) => {
             scanner.eat(); // consume {
             compile_state.begin_scope();
-            let result = block(error, compile_state, scanner, heap);
+            let result = block(error, compile_state, scanner);
             let pops = compile_state.end_scope();
             for _ in 0..pops {
                 compile_state.function.chunk.emit_pop(pos.line);
@@ -406,7 +395,7 @@ where
                 scanner.eat();
                 compile_state.chunk_mut().emit_nil(pos.line);
             } else {
-                expr(error, compile_state, scanner, heap)?;
+                expr(error, compile_state, scanner)?;
                 expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
             }
             compile_state.chunk_mut().emit_return(pos.line);
@@ -416,7 +405,7 @@ where
             }
             Ok(())
         }
-        _ => expr_statement(error, compile_state, scanner, heap),
+        _ => expr_statement(error, compile_state, scanner),
     }
 }
 
@@ -424,7 +413,6 @@ fn block<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
@@ -434,7 +422,7 @@ where
             .peek()
             .map_or(false, |next| next.0 == Symbol::RightBrace)
     {
-        declaration(error, compile_state, scanner, heap)
+        declaration(error, compile_state, scanner)
     }
 
     expect_next_token(error, TokenType::Symbol(Symbol::RightBrace), scanner)
@@ -444,7 +432,6 @@ fn print_statement<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
@@ -454,7 +441,7 @@ where
     } else {
         unreachable!();
     };
-    expr(error, compile_state, scanner, heap)?;
+    expr(error, compile_state, scanner)?;
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
     compile_state.function.chunk.emit_print(pos.line);
 
@@ -465,7 +452,6 @@ fn if_statement<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
@@ -477,13 +463,13 @@ where
         unreachable!()
     };
     expect_next_token(error, TokenType::Symbol(Symbol::LeftParen), scanner)?;
-    expr(error, compile_state, scanner, heap)?;
+    expr(error, compile_state, scanner)?;
     expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
 
     let skip_if_jump = compile_state.function.chunk.emit_jump_if_false(pos.line);
     compile_state.function.chunk.emit_pop(pos.line);
 
-    statement(error, compile_state, scanner, heap)?;
+    statement(error, compile_state, scanner)?;
 
     let skip_else_jump = compile_state.function.chunk.emit_jump(pos.line);
     if !compile_state.function.chunk.patch_jump(skip_if_jump) {
@@ -493,7 +479,7 @@ where
     // There's always a pop that we shouldn't jump over
     if let Ok(Token(TokenType::Keyword(Keyword::Else), _)) = scanner.peek() {
         scanner.eat();
-        statement(error, compile_state, scanner, heap)?;
+        statement(error, compile_state, scanner)?;
     }
     if !compile_state.function.chunk.patch_jump(skip_else_jump) {
         return error.report(pos, "branch jumps to far");
@@ -506,7 +492,6 @@ fn while_statement<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
@@ -520,14 +505,14 @@ where
 
     let loop_start = compile_state.function.chunk.current_marker();
     expect_next_token(error, TokenType::Symbol(Symbol::LeftParen), scanner)?;
-    expr(error, compile_state, scanner, heap)?;
+    expr(error, compile_state, scanner)?;
     expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
 
     // TODO: The looping
     let exit_jump = compile_state.function.chunk.emit_jump_if_false(pos.line);
     compile_state.function.chunk.emit_pop(pos.line);
 
-    statement(error, compile_state, scanner, heap)?;
+    statement(error, compile_state, scanner)?;
 
     if !compile_state.function.chunk.emit_loop(loop_start, pos.line) {
         return error.report(pos, "cannot jump that far");
@@ -545,7 +530,6 @@ fn for_statement<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
@@ -564,9 +548,9 @@ where
     // Both of these will consume the semi-colon
     if peek_next_token(TokenType::Keyword(Keyword::Var), scanner) {
         scanner.eat();
-        var_declaration(error, compile_state, scanner, heap)?
+        var_declaration(error, compile_state, scanner)?
     } else if !peek_next_token(TokenType::Symbol(Symbol::Semicolon), scanner) {
-        expr_statement(error, compile_state, scanner, heap)?;
+        expr_statement(error, compile_state, scanner)?;
     }
 
     let mut loop_start = compile_state.function.chunk.current_marker();
@@ -575,7 +559,7 @@ where
     if peek_next_token(TokenType::Symbol(Symbol::Semicolon), scanner) {
         compile_state.function.chunk.emit_bool(true, pos.line);
     } else {
-        expr(error, compile_state, scanner, heap)?;
+        expr(error, compile_state, scanner)?;
     };
     let exit_jump = compile_state.function.chunk.emit_jump_if_false(pos.line);
     compile_state.function.chunk.emit_pop(pos.line);
@@ -588,7 +572,7 @@ where
         let body_jump = compile_state.function.chunk.emit_jump(pos.line);
         let incr_start = compile_state.function.chunk.current_marker();
 
-        expr(error, compile_state, scanner, heap)?;
+        expr(error, compile_state, scanner)?;
         compile_state.function.chunk.emit_pop(pos.line);
 
         if !compile_state.function.chunk.emit_loop(loop_start, pos.line) {
@@ -602,7 +586,7 @@ where
 
     expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
 
-    statement(error, compile_state, scanner, heap)?;
+    statement(error, compile_state, scanner)?;
 
     if !compile_state.function.chunk.emit_loop(loop_start, pos.line) {
         return error.report(pos, "cannot jump that far");
@@ -622,7 +606,6 @@ fn expr_statement<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
@@ -631,7 +614,7 @@ where
         Ok(token) => token.1.line,
         Err(e) => e.pos.line,
     };
-    expr(error, compile_state, scanner, heap)?;
+    expr(error, compile_state, scanner)?;
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
     compile_state.function.chunk.emit_pop(line);
 
@@ -643,19 +626,17 @@ fn expr<'heap, R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &'heap mut Heap,
 ) -> Result<(), CompilePanic>
 where
     R: Reporter,
 {
-    expr_precedence(error, compile_state, scanner, heap, 1)
+    expr_precedence(error, compile_state, scanner, 1)
 }
 
 fn expr_precedence<'heap, R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &'heap mut Heap,
     min_precedence: u8,
 ) -> Result<(), CompilePanic>
 where
@@ -666,10 +647,10 @@ where
     match adapt_scanner_error(scanner.next(), error)? {
         Token(TokenType::Symbol(sym), pos) => {
             if sym == Symbol::LeftParen {
-                expr_precedence(error, compile_state, scanner, heap, 0)?;
+                expr_precedence(error, compile_state, scanner, 0)?;
                 expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
             } else {
-                expr_precedence(error, compile_state, scanner, heap, unary_prec(sym))?;
+                expr_precedence(error, compile_state, scanner, unary_prec(sym))?;
                 match sym {
                     Symbol::Minus => compile_state.function.chunk.emit_negate(pos.line),
                     Symbol::Bang => compile_state.function.chunk.emit_not(pos.line),
@@ -697,7 +678,7 @@ where
                 && can_assign
             {
                 scanner.eat();
-                expr_precedence(error, compile_state, scanner, heap, 2)?;
+                expr_precedence(error, compile_state, scanner, PREC_ASSIGNMENT + 1)?;
 
                 // Try and resolve a local first, if its not, then I guess we are going with global
                 if let Some(local_slot) = compile_state.resolve_local(identifier) {
@@ -745,70 +726,70 @@ where
                 match ttype {
                     TokenType::Symbol(sym) => match sym {
                         Symbol::Plus => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Add, pos.line);
                         }
                         Symbol::Minus => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Subtract, pos.line)
                         }
                         Symbol::Star => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Multiply, pos.line)
                         }
                         Symbol::Slash => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Divide, pos.line)
                         }
                         Symbol::EqualEqual => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Equal, pos.line)
                         }
                         Symbol::BangEqual => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Equal, pos.line);
                             compile_state.function.chunk.emit_negate(pos.line);
                         }
                         Symbol::Greater => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Greater, pos.line)
                         }
                         Symbol::GreaterEqual => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Less, pos.line);
                             compile_state.function.chunk.emit_not(pos.line);
                         }
                         Symbol::Less => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Less, pos.line)
                         }
                         Symbol::LessEqual => {
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             compile_state
                                 .chunk_mut()
                                 .emit_binary_op(BinaryOp::Greater, pos.line);
                             compile_state.function.chunk.emit_not(pos.line);
                         }
                         Symbol::LeftParen => {
-                            call(error, compile_state, scanner, heap, pos)?;
+                            call(error, compile_state, scanner, pos)?;
                         }
                         _ => unreachable!(),
                     },
@@ -817,7 +798,7 @@ where
                             let end_jump =
                                 compile_state.function.chunk.emit_jump_if_false(pos.line);
                             compile_state.function.chunk.emit_pop(pos.line);
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             if !compile_state.function.chunk.patch_jump(end_jump) {
                                 return error.report(pos, "cannot jump that far");
                             }
@@ -830,7 +811,7 @@ where
                                 return error.report(pos, "cannot jump that far");
                             }
                             compile_state.function.chunk.emit_pop(pos.line);
-                            expr_precedence(error, compile_state, scanner, heap, prec + 1)?;
+                            expr_precedence(error, compile_state, scanner, prec + 1)?;
                             if !compile_state.function.chunk.patch_jump(end_jump) {
                                 return error.report(pos, "cannot jump that far");
                             }
@@ -850,7 +831,6 @@ fn call<R>(
     error: &mut ErrorHandler<R>,
     compile_state: &mut CompileState,
     scanner: &mut Scanner,
-    heap: &mut Heap,
     pos: Pos,
 ) -> Result<(), CompilePanic>
 where
@@ -861,7 +841,7 @@ where
         scanner.eat();
     } else {
         loop {
-            expr(error, compile_state, scanner, heap)?;
+            expr(error, compile_state, scanner)?;
             if args == u8::MAX {
                 _ = error.report(pos, "too many arguments");
             } else {

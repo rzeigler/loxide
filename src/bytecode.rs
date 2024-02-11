@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use crate::heap::{Object, Value};
+use crate::value::{Object, Value};
 
 #[derive(Debug)]
 #[repr(u8)]

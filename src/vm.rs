@@ -4,7 +4,7 @@ use anyhow::{anyhow, bail, Context, Error, Result};
 
 use crate::{
     bytecode::{Chunk, OpCode},
-    heap::{Function, Heap, Object, Value},
+    value::{Function, NativeFunction, Object, Value},
 };
 
 struct Stack<V, const LIMIT: usize = 256> {
@@ -88,6 +88,13 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         VM {
             globals: HashMap::new(),
         }
+    }
+
+    pub fn define_native(&mut self, name: &'static str, function: NativeFunction) {
+        self.globals.insert(
+            name.to_string(),
+            Value::Object(Object::NativeFunction(name, function)),
+        );
     }
 
     pub fn interpret(&mut self, function: Function) -> Result<()> {
@@ -347,6 +354,17 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                                 ip: 0,
                                 stack_slot_start: stack.len() - args - 1,
                             })?;
+                        }
+                        Value::Object(Object::NativeFunction(_, fun)) => {
+                            let first_arg_slot = stack.len() - args;
+                            let result = match fun(&stack.stack[first_arg_slot..]) {
+                                Ok(o) => o,
+                                Err(e) => {
+                                    return Err(raise_error(&frames.stack[..], &e.to_string()))
+                                }
+                            };
+                            stack.stack.drain(first_arg_slot - 1..);
+                            stack.push(result)?;
                         }
                         _ => return Err(raise_error(&frames.stack[..], "not a callable")),
                     }

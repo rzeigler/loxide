@@ -1,10 +1,11 @@
 #![feature(alloc_layout_extra, let_chains)]
 
+mod builtins;
 mod bytecode;
 mod compiler;
-mod heap;
 mod reporter;
 mod scanner;
+mod value;
 mod vm;
 
 use std::env::args;
@@ -18,16 +19,17 @@ use anyhow::bail;
 use anyhow::{Context, Result};
 
 use compiler::compile;
-use heap::Heap;
 use reporter::WriteReporter;
 use vm::VM;
 
 fn main() -> Result<()> {
     let args = args().collect::<Vec<_>>();
+    let mut vm = VM::<true>::new();
+    vm.define_native("clock", builtins::clock);
     if args.len() == 2 {
-        run::<true>(&args[1])?;
+        run::<true>(vm, &args[1])?;
     } else if args.len() == 1 {
-        run_prompt::<true>()?;
+        run_prompt::<true>(vm)?;
     } else {
         eprintln!("Usage: loxide <script>");
         bail!("issue");
@@ -36,16 +38,14 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn run<const DEBUG: bool>(path: &str) -> Result<()> {
+fn run<const DEBUG: bool>(mut vm: VM<DEBUG>, path: &str) -> Result<()> {
     let mut file = File::open(&path).context("failed to open the file")?;
     let mut data = String::new();
     _ = file.read_to_string(&mut data)?;
 
-    let mut heap = Heap::new();
-    let mut vm: VM<DEBUG> = VM::new();
     let mut reporter = WriteReporter::new(stderr().lock());
 
-    match compile(&data, &mut reporter, &mut heap) {
+    match compile(&data, &mut reporter) {
         Ok(function) => {
             function.disassemble();
             if let Err(e) = vm.interpret(function) {
@@ -60,9 +60,8 @@ fn run<const DEBUG: bool>(path: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_prompt<const DEBUG: bool>() -> Result<()> {
+fn run_prompt<const DEBUG: bool>(mut vm: VM<DEBUG>) -> Result<()> {
     let stdin = std::io::stdin().lock();
-    let mut heap = Heap::new();
     let mut vm: VM<DEBUG> = VM::new();
 
     let mut reader = BufReader::new(stdin);
@@ -80,7 +79,7 @@ fn run_prompt<const DEBUG: bool>() -> Result<()> {
         }
 
         let mut reporter = WriteReporter::new(stderr().lock());
-        match compile(&line, &mut reporter, &mut heap) {
+        match compile(&line, &mut reporter) {
             Ok(function) => {
                 function.chunk.disassemble(&function.name);
                 if let Err(e) = vm.interpret(function) {
