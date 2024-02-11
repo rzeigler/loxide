@@ -14,11 +14,18 @@ pub enum Object {
     Function(Rc<Function>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionType {
+    Script,
+    Function,
+}
+
 #[derive(Debug, Clone)]
 pub struct Function {
     pub name: String,
     pub arity: u8,
     pub chunk: Chunk,
+    pub fun_type: FunctionType,
 }
 
 impl Function {
@@ -27,6 +34,7 @@ impl Function {
             name: "<script>".to_string(),
             arity: 0,
             chunk: Chunk::new(),
+            fun_type: FunctionType::Script,
         }
     }
 
@@ -35,6 +43,7 @@ impl Function {
             name: name.to_string(),
             arity: 0,
             chunk: Chunk::new(),
+            fun_type: FunctionType::Function,
         }
     }
 

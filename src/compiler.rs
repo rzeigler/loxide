@@ -4,8 +4,8 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::{
     bytecode::{BinaryOp, Chunk},
-    heap::{Function, Heap, Object, Value},
-    reporter::Reporter,
+    heap::{Function, FunctionType, Heap, Object, Value},
+    reporter::{self, Reporter},
     scanner::{self, Keyword, Pos, Scanner, Symbol, Token, TokenType},
 };
 
@@ -153,22 +153,10 @@ impl CompileState {
             .map(|(i, _)| i)
     }
 
-    fn define_global(&mut self, var: &str) -> Option<u8> {
-        if self.resolve_global(var).is_none() {
-            if self.globals.len() == u8::MAX.into() {
-                return None;
-            }
+    fn define_global(&mut self, var: &str) {
+        if self.globals.iter().find(|i| *i == var).is_some() {
             self.globals.push(var.to_string());
         }
-        self.resolve_global(var)
-    }
-
-    fn resolve_global(&self, name: &str) -> Option<u8> {
-        self.globals
-            .iter()
-            .enumerate()
-            .find(|(_, global)| *global == name)
-            .map(|(i, _)| i.try_into().unwrap())
     }
 }
 
@@ -278,14 +266,13 @@ where
     expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
 
     if compile_state.scope_depth == 0 {
-        if let Some(global_slot) = compile_state.define_global(&identifier) {
-            compile_state
-                .chunk_mut()
-                .emit_define_global(global_slot, pos.line);
-        } else {
-            // No need to panic
-            _ = error.report(pos, "too many globals")
-        }
+        compile_state.define_global(&identifier);
+        let global_slot = compile_state
+            .chunk_mut()
+            .intern_string_constant(&identifier);
+        compile_state
+            .chunk_mut()
+            .emit_define_global(global_slot, pos.line);
         Ok(())
     } else {
         compile_state.define_local(identifier.to_string(), pos, error)
@@ -315,13 +302,16 @@ where
         false,
     )?;
 
-    if let Some(global) = global {
+    if compile_state.scope_depth == 0 {
+        compile_state.define_global(&identifier);
+        let global_slot = compile_state
+            .chunk_mut()
+            .intern_string_constant(&identifier);
         compile_state
             .chunk_mut()
-            .emit_define_global(global, pos.line);
+            .emit_define_global(global_slot, pos.line);
     } else {
-        // No need to panic
-        _ = error.report(pos, "too many globals");
+        compile_state.define_local(identifier.to_string(), pos, error)?;
     }
 
     Ok(())
@@ -366,6 +356,9 @@ where
     block(error, &mut inner_state, scanner, heap)?;
 
     inner_state.end_scope();
+    // Default return
+    inner_state.chunk_mut().emit_nil(pos.line);
+    inner_state.chunk_mut().emit_return(pos.line);
 
     compile_state.chunk_mut().emit_constant(
         Value::Object(Object::Function(Rc::new(inner_state.function))),
@@ -406,6 +399,22 @@ where
                 compile_state.function.chunk.emit_pop(pos.line);
             }
             result
+        }
+        Token(TokenType::Keyword(Keyword::Return), pos) => {
+            scanner.eat();
+            if peek_next_token(TokenType::Symbol(Symbol::Semicolon), scanner) {
+                scanner.eat();
+                compile_state.chunk_mut().emit_nil(pos.line);
+            } else {
+                expr(error, compile_state, scanner, heap)?;
+                expect_next_token(error, TokenType::Symbol(Symbol::Semicolon), scanner)?;
+            }
+            compile_state.chunk_mut().emit_return(pos.line);
+
+            if compile_state.function.fun_type == FunctionType::Script {
+                _ = error.report(pos, "cannot return from a script");
+            }
+            Ok(())
         }
         _ => expr_statement(error, compile_state, scanner, heap),
     }
@@ -652,7 +661,7 @@ fn expr_precedence<'heap, R>(
 where
     R: Reporter,
 {
-    let can_assign = min_precedence <= 1;
+    let can_assign = min_precedence <= PREC_ASSIGNMENT;
 
     match adapt_scanner_error(scanner.next(), error)? {
         Token(TokenType::Symbol(sym), pos) => {
@@ -695,27 +704,24 @@ where
                     compile_state
                         .chunk_mut()
                         .emit_set_local(local_slot.try_into().unwrap(), pos.line);
-                } else if let Some(global_slot) = compile_state.resolve_global(identifier) {
+                } else {
+                    // assignment only allowed if already
+                    let global_slot = compile_state.chunk_mut().intern_string_constant(identifier);
                     compile_state
                         .chunk_mut()
-                        .emit_set_global(global_slot.try_into().unwrap(), pos.line);
-                } else {
-                    _ = error.report(
-                        pos,
-                        &format!("unknown variable for assignment: {}", identifier),
-                    )
+                        .emit_set_global(global_slot, pos.line);
                 }
             } else {
                 if let Some(local_slot) = compile_state.resolve_local(identifier) {
                     compile_state
                         .chunk_mut()
                         .emit_get_local(local_slot.try_into().unwrap(), pos.line);
-                } else if let Some(global_slot) = compile_state.resolve_global(identifier) {
+                } else {
+                    // This should return an existing global since we know it is a global
+                    let global_slot = compile_state.chunk_mut().intern_string_constant(identifier);
                     compile_state
                         .chunk_mut()
-                        .emit_get_global(global_slot.try_into().unwrap(), pos.line);
-                } else {
-                    _ = error.report(pos, &format!("unknown variable for access: {}", identifier))
+                        .emit_get_global(global_slot, pos.line);
                 }
             }
         }
@@ -725,7 +731,7 @@ where
                 pos.line,
             );
         }
-        _ => todo!(),
+        t => panic!(),
     };
 
     // Equivalent to the while (prec <= getRule(token).precedence)
@@ -801,6 +807,9 @@ where
                                 .emit_binary_op(BinaryOp::Greater, pos.line);
                             compile_state.function.chunk.emit_not(pos.line);
                         }
+                        Symbol::LeftParen => {
+                            call(error, compile_state, scanner, heap, pos)?;
+                        }
                         _ => unreachable!(),
                     },
                     TokenType::Keyword(key) => match key {
@@ -837,6 +846,39 @@ where
     Ok(())
 }
 
+fn call<R>(
+    error: &mut ErrorHandler<R>,
+    compile_state: &mut CompileState,
+    scanner: &mut Scanner,
+    heap: &mut Heap,
+    pos: Pos,
+) -> Result<(), CompilePanic>
+where
+    R: Reporter,
+{
+    let mut args: u8 = 0;
+    if peek_next_token(TokenType::Symbol(Symbol::RightParen), scanner) {
+        scanner.eat();
+    } else {
+        loop {
+            expr(error, compile_state, scanner, heap)?;
+            if args == u8::MAX {
+                _ = error.report(pos, "too many arguments");
+            } else {
+                args += 1;
+            }
+            if peek_next_token(TokenType::Symbol(Symbol::Comma), scanner) {
+                scanner.eat();
+            } else {
+                break;
+            }
+        }
+        expect_next_token(error, TokenType::Symbol(Symbol::RightParen), scanner)?;
+    }
+    compile_state.chunk_mut().emit_call(args, pos.line);
+    Ok(())
+}
+
 // Do extra reporting logic instead of just From
 fn adapt_scanner_error<T, R>(
     result: Result<T, scanner::Error>,
@@ -853,20 +895,6 @@ where
         }
     }
 }
-
-/* The table from the book
-const PREC_ZERO: u8 = 0;
-const PREC_ASSIGNMENT: u8 = 1; // =
-const PREC_OR: u8 = 2; // or
-const PREC_AND: u8 = 3; // and
-const PREC_EQUALITY: u8 = 4; // == !=
-const PREC_COMPARISON: u8 = 5; // < > <= >=
-const PREC_TERM: u8 = 6; // + -
-const PREC_FACTOR: u8 = 7; // * /
-const PREC_UNARY: u8 = 8; // ! -
-const PREC_CALL: u8 = 9; // . ()
-const PREC_PRIMARY: u8 = 10;
-*/
 
 fn expect_next_token<R>(
     error: &mut ErrorHandler<R>,
@@ -916,20 +944,36 @@ fn unary_prec(sym: Symbol) -> u8 {
     }
 }
 
+// The table from the book
+const PREC_ZERO: u8 = 0;
+const PREC_ASSIGNMENT: u8 = 1; // =
+const PREC_OR: u8 = 2; // or
+const PREC_AND: u8 = 3; // and
+const PREC_EQUALITY: u8 = 4; // == !=
+const PREC_COMPARISON: u8 = 5; // < > <= >=
+const PREC_TERM: u8 = 6; // + -
+const PREC_FACTOR: u8 = 7; // * /
+const PREC_UNARY: u8 = 8; // ! -
+const PREC_CALL: u8 = 9; // . ()
+const PREC_PRIMARY: u8 = 10;
+
 fn binary_prec(token: TokenType) -> Option<u8> {
     match token {
         TokenType::Symbol(sym) => match sym {
-            Symbol::Slash | Symbol::Star => Some(7),
-            Symbol::Plus | Symbol::Minus => Some(6),
-            Symbol::Less | Symbol::LessEqual | Symbol::Greater | Symbol::GreaterEqual => Some(5),
-            Symbol::EqualEqual | Symbol::BangEqual => Some(4),
+            Symbol::Slash | Symbol::Star => Some(PREC_FACTOR),
+            Symbol::Plus | Symbol::Minus => Some(PREC_TERM),
+            Symbol::Less | Symbol::LessEqual | Symbol::Greater | Symbol::GreaterEqual => {
+                Some(PREC_COMPARISON)
+            }
+            Symbol::EqualEqual | Symbol::BangEqual => Some(PREC_EQUALITY),
+            Symbol::LeftParen => Some(PREC_CALL),
             // We handle equality precedence directly in the expr_precedence leading
             // Symbol::Equal => Some(1),
             _ => None,
         },
         TokenType::Keyword(key) => match key {
-            Keyword::And => Some(3),
-            Keyword::Or => Some(2),
+            Keyword::And => Some(PREC_AND),
+            Keyword::Or => Some(PREC_OR),
             _ => None,
         },
         _ => None,

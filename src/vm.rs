@@ -1,13 +1,13 @@
-use std::{fmt::Debug, rc::Rc};
+use std::{collections::HashMap, fmt::Debug, rc::Rc};
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Error, Result};
 
 use crate::{
     bytecode::{Chunk, OpCode},
     heap::{Function, Heap, Object, Value},
 };
 
-pub struct Stack<V, const LIMIT: usize = 256> {
+struct Stack<V, const LIMIT: usize = 256> {
     stack: Vec<V>,
 }
 
@@ -15,13 +15,13 @@ impl<V, const LIMIT: usize> Stack<V, LIMIT>
 where
     V: Clone,
 {
-    pub fn new() -> Stack<V, LIMIT> {
+    fn new() -> Stack<V, LIMIT> {
         Stack {
             stack: Vec::with_capacity(LIMIT),
         }
     }
 
-    pub fn push(&mut self, v: V) -> Result<()> {
+    fn push(&mut self, v: V) -> Result<()> {
         if self.stack.len() == LIMIT {
             bail!("stack limit exceeded");
         } else {
@@ -30,21 +30,29 @@ where
         }
     }
 
-    pub fn pop(&mut self) -> Result<V> {
-        self.stack.pop().ok_or_else(|| anyhow!("stack is empty"))
+    fn pop(&mut self) -> V {
+        self.stack.pop().expect("stack is empty")
     }
 
-    pub fn peek(&self) -> Result<V> {
-        self.stack
-            .last()
-            .ok_or_else(|| anyhow!("stack is empty"))
-            .cloned()
+    fn peek(&self) -> &V {
+        self.stack.last().expect("stack is empty")
     }
 
-    pub fn peek_mut(&mut self) -> Result<&mut V> {
+    fn peek_n(&self, skip: usize) -> &V {
         self.stack
-            .last_mut()
-            .ok_or_else(|| anyhow!("stack is empty"))
+            .iter()
+            .rev()
+            .skip(skip)
+            .next()
+            .expect("stack is not that high")
+    }
+
+    fn peek_mut(&mut self) -> &mut V {
+        self.stack.last_mut().expect("stack is empty")
+    }
+
+    fn len(&self) -> usize {
+        self.stack.len()
     }
 }
 
@@ -72,15 +80,13 @@ struct CallFrame {
 }
 
 pub struct VM<const TRACE_EXEC: bool = false> {
-    heap: Heap,
-    globals: Vec<Value>,
+    globals: HashMap<String, Value>,
 }
 
 impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
-    pub fn new(heap: Heap) -> VM<TRACE_EXEC> {
+    pub fn new() -> VM<TRACE_EXEC> {
         VM {
-            heap,
-            globals: Vec::new(),
+            globals: HashMap::new(),
         }
     }
 
@@ -121,7 +127,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
             eprintln!("==== EXEC ====");
         }
         loop {
-            let frame = frames.peek_mut().unwrap();
+            let frame = frames.peek_mut();
 
             if TRACE_EXEC {
                 let mut result = String::new();
@@ -129,23 +135,31 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                 eprintln!("{} \t\tstack: {:?}", result, stack);
             }
             // Store this since read_inst will mutate the ip and we don't want to backtrack
-            let last_ip = frame.ip;
             match self.read_inst(&frame.function.chunk, &mut frame.ip)? {
                 OpCode::Return => {
-                    return Ok(());
+                    let ret = stack.pop();
+                    let frame = frames.pop();
+                    if frames.stack.is_empty() {
+                        // At this point, we have popped the script, so we can assert the stack is empty
+                        // to verify nothing went wrong
+                        assert!(stack.stack.is_empty());
+                        return Ok(());
+                    } else {
+                        stack.stack.drain(frame.stack_slot_start..);
+                        stack.push(ret)?; // should be infallible, follows a pop
+                    }
                 }
                 OpCode::Constant => {
                     let constant = self.read_constant(&frame.function.chunk, &mut frame.ip)?;
                     stack.push(constant)?;
                 }
                 OpCode::Negate => {
-                    if let Value::Number(n) = stack.pop()? {
+                    if let Value::Number(n) = stack.pop() {
                         stack.push(Value::Number(-n))?;
                     } else {
                         return Err(raise_error(
-                            &frame.function.chunk,
+                            &frames.stack[..],
                             "type error: cannot negate operand",
-                            last_ip,
                         ));
                     }
                 }
@@ -158,17 +172,15 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                             stack.push(self.concat_strings(Value::Object(l), Value::Object(r)))?;
                         } else {
                             return Err(raise_error(
-                                &frame.function.chunk,
+                                &frames.stack[..],
                                 "type error: cannot add operands",
-                                last_ip,
                             ));
                         }
                     }
                     _ => {
                         return Err(raise_error(
-                            &frame.function.chunk,
+                            &frames.stack[..],
                             "type error: cannot add operands",
-                            last_ip,
                         ))
                     }
                 },
@@ -177,9 +189,8 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         stack.push(Value::Number(l - r))?;
                     } else {
                         return Err(raise_error(
-                            &frame.function.chunk,
+                            &frames.stack[..],
                             "type error: cannot subtract operands",
-                            last_ip,
                         ));
                     }
                 }
@@ -188,27 +199,21 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         stack.push(Value::Number(l * r))?;
                     } else {
                         return Err(raise_error(
-                            &frame.function.chunk,
+                            &frames.stack[..],
                             "type error: cannot multiply operands",
-                            last_ip,
                         ));
                     }
                 }
                 OpCode::Divide => {
                     if let (Value::Number(l), Value::Number(r)) = self.pop_binary_operands(stack)? {
                         if r == 0f64 {
-                            return Err(raise_error(
-                                &frame.function.chunk,
-                                "divide by zero",
-                                last_ip,
-                            ));
+                            return Err(raise_error(&frames.stack[..], "divide by zero"));
                         }
                         stack.push(Value::Number(l / r))?;
                     } else {
                         return Err(raise_error(
-                            &frame.function.chunk,
+                            &frames.stack[..],
                             "type error: cannot divide operands",
-                            last_ip,
                         ));
                     }
                 }
@@ -222,7 +227,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                     stack.push(Value::Nil)?;
                 }
                 OpCode::Not => {
-                    let v = stack.pop()?.to_bool();
+                    let v = stack.pop().to_bool();
                     stack.push(Value::Bool(!v))?;
                 }
                 OpCode::Equal => {
@@ -234,9 +239,8 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         stack.push(Value::Bool(l > r))?;
                     } else {
                         return Err(raise_error(
-                            &frame.function.chunk,
+                            &frames.stack[..],
                             "type error: > requires numeric operands",
-                            last_ip,
                         ));
                     }
                 }
@@ -245,65 +249,107 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                         stack.push(Value::Bool(l > r))?;
                     } else {
                         return Err(raise_error(
-                            &frame.function.chunk,
+                            &frames.stack[..],
                             "type error: < requires numeric operands",
-                            last_ip,
                         ));
                     }
                 }
                 OpCode::Print => {
-                    let v = stack.pop()?;
+                    let v = stack.pop();
                     println!("{}", v);
                 }
                 OpCode::Pop => {
-                    stack.pop()?;
+                    stack.pop();
                 }
                 OpCode::DefineGlobal => {
-                    let global_slot = self.read_stack_slot(&frame.function.chunk, &mut frame.ip)?;
-                    let value = stack.pop()?;
-                    if self.globals.len() == global_slot {
-                        self.globals.push(value);
-                    } else if self.globals.len() > global_slot {
-                        self.globals[global_slot] = value;
+                    if let Value::Object(Object::String(s)) =
+                        self.read_constant(&frame.function.chunk, &mut frame.ip)?
+                    {
+                        let value = stack.pop();
+                        self.globals.insert(s.as_ref().to_owned(), value);
                     } else {
-                        // global_slot definition out of order
-                        panic!("global definition out of order bug");
+                        panic!("miscompilation: global constant was not a string")
                     }
                 }
                 OpCode::GetGlobal => {
-                    let global_slot = self.read_stack_slot(&frame.function.chunk, &mut frame.ip)?;
-                    let value = self.globals[global_slot].clone();
-                    stack.push(value)?;
+                    if let Value::Object(Object::String(s)) =
+                        self.read_constant(&frame.function.chunk, &mut frame.ip)?
+                    {
+                        match self.globals.get(s.as_ref()).clone() {
+                            Some(value) => {
+                                stack.push(value.clone())?;
+                            }
+                            None => {
+                                return Err(raise_error(
+                                    &frames.stack[..],
+                                    &format!("unknown global {}", s),
+                                ))
+                            }
+                        }
+                    } else {
+                        panic!("miscompilation: global constant was not a string")
+                    }
                 }
                 OpCode::SetGlobal => {
-                    let global_slot = self.read_stack_slot(&frame.function.chunk, &mut frame.ip)?;
-                    let value = stack.peek()?;
-                    self.globals[global_slot] = value;
+                    if let Value::Object(Object::String(s)) =
+                        self.read_constant(&frame.function.chunk, &mut frame.ip)?
+                    {
+                        if let Some(global) = self.globals.get_mut(s.as_ref()) {
+                            *global = stack.peek().clone();
+                        } else {
+                            return Err(raise_error(
+                                &frames.stack[..],
+                                &format!("unknown global {}", s),
+                            ));
+                        }
+                    } else {
+                        panic!("miscompilation: global constant was not a string")
+                    }
                 }
                 OpCode::GetLocal => {
-                    let stack_slot = self.read_stack_slot(&frame.function.chunk, &mut frame.ip)?;
-                    let value = stack.stack[frame.stack_slot_start + stack_slot].clone();
+                    let stack_slot = self.read_u8(&frame.function.chunk, &mut frame.ip)?;
+                    let value =
+                        stack.stack[frame.stack_slot_start + usize::from(stack_slot)].clone();
                     stack.push(value)?;
                 }
                 OpCode::SetLocal => {
-                    let stack_slot = self.read_stack_slot(&frame.function.chunk, &mut frame.ip)?;
-                    let value = stack.peek()?;
-                    stack.stack[frame.stack_slot_start + stack_slot] = value;
+                    let stack_slot = self.read_u8(&frame.function.chunk, &mut frame.ip)?;
+                    let value = stack.peek();
+                    stack.stack[frame.stack_slot_start + usize::from(stack_slot)] = value.clone();
                 }
                 OpCode::JumpIfFalse => {
-                    let jump_len = self.read_jump_len(&frame.function.chunk, &mut frame.ip)?;
-                    let value = stack.peek()?;
+                    let jump_len = self.read_u16(&frame.function.chunk, &mut frame.ip)?;
+                    let value = stack.peek();
                     if !value.to_bool() {
-                        frame.ip += jump_len;
+                        frame.ip += usize::from(jump_len);
                     }
                 }
                 OpCode::Jump => {
-                    let jump_len = self.read_jump_len(&frame.function.chunk, &mut frame.ip)?;
-                    frame.ip += jump_len;
+                    let jump_len = self.read_u16(&frame.function.chunk, &mut frame.ip)?;
+                    frame.ip += usize::from(jump_len);
                 }
                 OpCode::Loop => {
-                    let jump_len = self.read_jump_len(&frame.function.chunk, &mut frame.ip)?;
-                    frame.ip -= jump_len;
+                    let jump_len = self.read_u16(&frame.function.chunk, &mut frame.ip)?;
+                    frame.ip -= usize::from(jump_len);
+                }
+                OpCode::Call => {
+                    let args = usize::from(self.read_u8(&frame.function.chunk, &mut frame.ip)?);
+                    match stack.peek_n(args) {
+                        Value::Object(Object::Function(fun)) => {
+                            if usize::from(fun.arity) != args {
+                                return Err(raise_error(
+                                    &frames.stack[..],
+                                    "incorrect number of arguments",
+                                ));
+                            }
+                            frames.push(CallFrame {
+                                function: fun.clone(),
+                                ip: 0,
+                                stack_slot_start: stack.len() - args - 1,
+                            })?;
+                        }
+                        _ => return Err(raise_error(&frames.stack[..], "not a callable")),
+                    }
                 }
             }
         }
@@ -325,27 +371,27 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         read_constant(chunk, offset)
     }
 
-    fn read_stack_slot(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<usize> {
+    fn read_u8(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<u8> {
         let offset = read_code_at_ip(chunk, *ip)?;
         *ip += 1;
         Ok(offset.into())
     }
 
-    fn read_jump_len(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<usize> {
+    fn read_u16(&mut self, chunk: &Chunk, ip: &mut usize) -> Result<u16> {
         let high_byte = read_code_at_ip(chunk, *ip)?;
         let low_byte = read_code_at_ip(chunk, *ip + 1)?;
         *ip += 2;
 
         let count = ((high_byte as u16) << 8) | (low_byte as u16);
-        Ok(count.into())
+        Ok(count)
     }
 
     fn pop_binary_operands<const STACK: usize>(
         &mut self,
         stack: &mut Stack<Value, STACK>,
     ) -> Result<(Value, Value)> {
-        let r = stack.pop()?;
-        let l = stack.pop()?;
+        let r = stack.pop();
+        let l = stack.pop();
         Ok((l, r))
     }
 
@@ -361,8 +407,16 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
     }
 }
 
-fn raise_error(chunk: &Chunk, msg: &str, ip: usize) -> anyhow::Error {
-    anyhow!("error: {} at {}", msg, chunk.lines()[ip])
+fn raise_error(frames: &[CallFrame], msg: &str) -> Error {
+    eprintln!("stack trace");
+    for frame in frames.iter().rev() {
+        eprintln!(
+            "[line {}] in {}",
+            frame.function.chunk.lines()[frame.ip - 1],
+            frame.function.name
+        )
+    }
+    anyhow!(msg.to_owned())
 }
 
 fn read_code_at_ip(chunk: &Chunk, ip: usize) -> Result<u8> {

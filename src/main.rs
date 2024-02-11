@@ -42,7 +42,7 @@ fn run<const DEBUG: bool>(path: &str) -> Result<()> {
     _ = file.read_to_string(&mut data)?;
 
     let mut heap = Heap::new();
-    let mut vm: VM<DEBUG> = VM::new(heap.clone());
+    let mut vm: VM<DEBUG> = VM::new();
     let mut reporter = WriteReporter::new(stderr().lock());
 
     match compile(&data, &mut reporter, &mut heap) {
@@ -63,7 +63,7 @@ fn run<const DEBUG: bool>(path: &str) -> Result<()> {
 fn run_prompt<const DEBUG: bool>() -> Result<()> {
     let stdin = std::io::stdin().lock();
     let mut heap = Heap::new();
-    let mut vm: VM<DEBUG> = VM::new(heap.clone());
+    let mut vm: VM<DEBUG> = VM::new();
 
     let mut reader = BufReader::new(stdin);
     let mut line = String::new();

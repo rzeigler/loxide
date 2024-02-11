@@ -1,4 +1,6 @@
-use crate::heap::Value;
+use std::rc::Rc;
+
+use crate::heap::{Object, Value};
 
 #[derive(Debug)]
 #[repr(u8)]
@@ -26,6 +28,7 @@ pub enum OpCode {
     JumpIfFalse,
     Jump,
     Loop,
+    Call,
     Return, // Return goes last as the sentinel for maximum opcode
 }
 
@@ -211,6 +214,14 @@ impl Chunk {
         self.code.len() - 2
     }
 
+    pub fn emit_call(&mut self, args: u8, line: usize) {
+        self.code.push(OpCode::Call as u8);
+        self.code.push(args);
+
+        self.lines.push(line);
+        self.lines.push(line);
+    }
+
     #[must_use]
     pub fn patch_jump(&mut self, jump_offset: usize) -> bool {
         let distance = self.code.len() - jump_offset - 2;
@@ -256,6 +267,17 @@ impl Chunk {
         (self.constants.len() - 1) as u8
     }
 
+    pub fn intern_string_constant(&mut self, str: &str) -> u8 {
+        for i in 0..self.constants().len() {
+            if let Value::Object(Object::String(s)) = &self.constants[i] {
+                if *(s.as_ref()) == str {
+                    return i.try_into().unwrap();
+                }
+            }
+        }
+        self.add_constant(Value::Object(Object::String(Rc::new(str.to_owned()))))
+    }
+
     pub fn disassemble(&self, name: &str) {
         println!("==== {} ====", name);
 
@@ -294,6 +316,7 @@ impl Chunk {
                 OpCode::Constant => self.constant_inst(result, offset),
                 OpCode::JumpIfFalse | OpCode::Jump => self.jump_inst(result, 1, offset),
                 OpCode::Loop => self.jump_inst(result, -1, offset),
+                OpCode::Call => self.call_inst(result, offset),
                 OpCode::Return => self.zero_arg_inst(offset),
             }
         } else {
@@ -332,6 +355,11 @@ impl Chunk {
 
     fn local_inst(&self, target: &mut String, offset: usize) -> usize {
         target.push_str(&format!("{} ", self.code[offset + 1]));
+        offset + 2
+    }
+
+    fn call_inst(&self, target: &mut String, offset: usize) -> usize {
+        target.push_str(&format!("{}", self.code[offset + 1]));
         offset + 2
     }
 }
