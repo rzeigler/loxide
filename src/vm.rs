@@ -90,10 +90,10 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
         }
     }
 
-    pub fn define_native(&mut self, name: &'static str, function: NativeFunction) {
+    pub fn define_native(&mut self, name: &'static str, fun: NativeFunction) {
         self.globals.insert(
             name.to_string(),
-            Value::Object(Object::NativeFunction(name, function)),
+            Value::Object(Object::NativeFunction { name, fun }),
         );
     }
 
@@ -355,7 +355,7 @@ impl<const TRACE_EXEC: bool> VM<TRACE_EXEC> {
                                 stack_slot_start: stack.len() - args - 1,
                             })?;
                         }
-                        Value::Object(Object::NativeFunction(_, fun)) => {
+                        Value::Object(Object::NativeFunction { name: _, fun }) => {
                             let first_arg_slot = stack.len() - args;
                             let result = match fun(&stack.stack[first_arg_slot..]) {
                                 Ok(o) => o,

@@ -11,7 +11,13 @@ use crate::bytecode::Chunk;
 pub enum Object {
     String(Rc<String>), // Pretend static
     Function(Rc<Function>),
-    NativeFunction(&'static str, NativeFunction),
+    Closure {
+        fun: Rc<Function>,
+    },
+    NativeFunction {
+        name: &'static str,
+        fun: NativeFunction,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,7 +103,10 @@ impl Value {
                     // Already a string
                     Object::String(str) => Object::String(str.clone()),
                     Object::Function(fun) => Object::String(Rc::new(fun.name.clone())),
-                    Object::NativeFunction(name, _) => Object::String(Rc::new(name.to_string())),
+                    Object::Closure { fun } => Object::String(Rc::new(fun.name.clone())),
+                    Object::NativeFunction { name, fun: _ } => {
+                        Object::String(Rc::new(name.to_string()))
+                    }
                 }
             }
             Value::Nil => Object::String(Rc::new("nil".to_owned())),
@@ -146,7 +155,10 @@ impl Display for Value {
                     Object::Function(fun) => {
                         write!(f, "<fn {}>", fun.name)
                     }
-                    Object::NativeFunction(name, _) => {
+                    Object::Closure { fun } => {
+                        write!(f, "<closure {}>", fun.name)
+                    }
+                    Object::NativeFunction { name, fun: _ } => {
                         write!(f, "<native {}>", name)
                     }
                 }
